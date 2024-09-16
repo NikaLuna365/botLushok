@@ -4,7 +4,6 @@ import google.generativeai as genai
 from telegram import Update, ForceReply
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import re
-from dotenv import load_dotenv
 import logging
 import speech_recognition as sr
 from pydub import AudioSegment
@@ -16,9 +15,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# Загрузка переменных окружения из .env файла
-load_dotenv()
-
 # Функция проверки и загрузки ключей из переменных окружения
 def load_env_variable(var_name, error_message):
     var_value = os.getenv(var_name)
@@ -27,9 +23,9 @@ def load_env_variable(var_name, error_message):
         raise ValueError(error_message)
     return var_value
 
-# Загрузка API ключа и Telegram токена
-api_key = load_env_variable('API_KEY', "API_KEY не найден. Проверьте файл .env.")
-telegram_token = load_env_variable('TELEGRAM_BOT_TOKEN', "TELEGRAM_BOT_TOKEN не найден. Проверьте файл .env.")
+# Загрузка API ключа и Telegram токена из переменных окружения
+api_key = load_env_variable('API_KEY', "API_KEY не найден. Пожалуйста, установите его как переменную окружения.")
+telegram_token = load_env_variable('TELEGRAM_BOT_TOKEN', "TELEGRAM_BOT_TOKEN не найден. Пожалуйста, установите его как переменную окружения.")
 
 # Настройка модели генерации текста
 genai.configure(api_key=api_key)
