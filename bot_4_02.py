@@ -131,7 +131,7 @@ def generate_response(user_id, user_input):
         history_context = f"{lushok_context}\n\nКонтекст:\n{' '.join(recent_history)}\nОтвет:"
 
         # Используем корректное имя модели
-        model_name = "gemini-1.5-flash"
+        model_name = "models/gemini-1.5-flash"
 
         gen_response = genai.generate_text(
             prompt=history_context,
