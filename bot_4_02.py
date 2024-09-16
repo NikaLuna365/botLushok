@@ -8,30 +8,58 @@ import logging
 import speech_recognition as sr
 from pydub import AudioSegment
 from pathlib import Path
+import sys
 
-# Устанавливаем логирование для отслеживания ошибок и предупреждений
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# Настройка логирования
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Создание формата логов
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Создание обработчика для записи логов в файл
+file_handler = logging.FileHandler('bot.log')
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
+# Создание обработчика для вывода логов в консоль
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
+# Глобальный обработчик непойманных исключений
+def handle_unhandled_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        # Позволяет прерывать программу с помощью Ctrl+C
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    logger.critical("Непойманное исключение", exc_info=(exc_type, exc_value, exc_traceback))
+
+sys.excepthook = handle_unhandled_exception
 
 # Функция проверки и загрузки ключей из переменных окружения
 def load_env_variable(var_name, error_message):
     var_value = os.getenv(var_name)
     if not var_value:
-        logging.error(error_message)
+        logger.error(error_message)
         raise ValueError(error_message)
     return var_value
 
 # Загрузка API ключа и Telegram токена из переменных окружения
-api_key = load_env_variable('API_KEY', "API_KEY не найден. Пожалуйста, установите его как переменную окружения.")
-telegram_token = load_env_variable('TELEGRAM_BOT_TOKEN', "TELEGRAM_BOT_TOKEN не найден. Пожалуйста, установите его как переменную окружения.")
+try:
+    api_key = load_env_variable('API_KEY', "API_KEY не найден. Пожалуйста, установите его как переменную окружения.")
+    telegram_token = load_env_variable('TELEGRAM_BOT_TOKEN', "TELEGRAM_BOT_TOKEN не найден. Пожалуйста, установите его как переменную окружения.")
+except ValueError as ve:
+    logger.critical(f"Не удалось загрузить переменные окружения: {ve}")
+    sys.exit(1)
 
 # Настройка модели генерации текста
 genai.configure(api_key=api_key)
+logger.info("Модель генерации текста настроена успешно.")
 
 # Установка текущей рабочей директории на директорию скрипта
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
+logger.info("Рабочая директория установлена.")
 
 # Извлечение текста из файлов .docx
 def extract_texts_from_files(directory):
@@ -40,8 +68,12 @@ def extract_texts_from_files(directory):
         for file in files:
             if file.endswith(".docx"):
                 file_path = os.path.join(root, file)
-                text = docx2txt.process(file_path)
-                extracted_texts.append(text)
+                try:
+                    text = docx2txt.process(file_path)
+                    extracted_texts.append(text)
+                    logger.info(f"Текст извлечён из файла: {file_path}")
+                except Exception as e:
+                    logger.error(f"Ошибка при извлечении текста из файла {file_path}: {e}", exc_info=True)
     return extracted_texts
 
 # Пути к папке с файлами
@@ -50,6 +82,7 @@ texts = extract_texts_from_files(directory_path)
 
 # Объединяем все тексты в один для дальнейшего анализа
 combined_text = " ".join(texts)
+logger.info("Тексты из файлов объединены.")
 
 # Контекст для генерации ответов в стиле Lushok
 lushok_context = """
@@ -119,12 +152,14 @@ def generate_response(user_id, user_input):
             response = gen_response.text.strip()
             response = remove_excess_emojis(response)
             user_histories[user_id].append(f"Bot: {response}")
+            logger.info(f"Сгенерирован ответ для пользователя {user_id}: {response}")
             return response
         else:
+            logger.warning(f"Генерация ответа не удалась для пользователя {user_id}.")
             return "Извините, но я не могу ответить на ваш вопрос прямо сейчас."
 
     except Exception as e:
-        logging.error(f"Ошибка при генерации ответа: {e}")
+        logger.error(f"Ошибка при генерации ответа для пользователя {user_id}: {e}", exc_info=True)
         return "Произошла ошибка при генерации ответа. Попробуйте еще раз."
 
 # Функция для обработки голосовых сообщений
@@ -132,10 +167,12 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         voice = update.message.voice
         user_id = update.effective_user.id
+        logger.info(f"Получено голосовое сообщение от пользователя {user_id}")
 
         # Скачиваем голосовое сообщение
         file = await context.bot.get_file(voice.file_id)
         voice_file_path = await file.download_to_drive()
+        logger.info(f"Голосовое сообщение сохранено по пути: {voice_file_path}")
 
         # Конвертируем путь в объект Path
         voice_file = Path(voice_file_path)
@@ -144,6 +181,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         ogg_audio = AudioSegment.from_file(voice_file, format='ogg')
         wav_filename = voice_file.with_suffix('.wav')
         ogg_audio.export(wav_filename, format='wav')
+        logger.info(f"Голосовое сообщение конвертировано в WAV: {wav_filename}")
 
         # Распознаем речь с помощью SpeechRecognition
         recognizer = sr.Recognizer()
@@ -152,18 +190,21 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             try:
                 # Используем Google API для распознавания речи
                 text = recognizer.recognize_google(audio_data, language='ru-RU')
+                logger.info(f"Распознанный текст от пользователя {user_id}: {text}")
                 response = generate_response(user_id, text)
                 await update.message.reply_text(response)
             except sr.UnknownValueError:
+                logger.warning(f"Не удалось распознать речь от пользователя {user_id}.")
                 await update.message.reply_text("Извините, я не смог распознать речь.")
             except sr.RequestError as e:
-                logging.error(f"Ошибка запроса к сервису распознавания речи: {e}")
+                logger.error(f"Ошибка запроса к сервису распознавания речи для пользователя {user_id}: {e}", exc_info=True)
                 await update.message.reply_text("Произошла ошибка при распознавании речи. Попробуйте еще раз.")
         # Удаляем временные файлы
         voice_file.unlink()
         wav_filename.unlink()
+        logger.info(f"Временные файлы удалены для пользователя {user_id}")
     except Exception as e:
-        logging.error(f"Ошибка при обработке голосового сообщения: {e}")
+        logger.error(f"Ошибка при обработке голосового сообщения от пользователя {user_id}: {e}", exc_info=True)
         await update.message.reply_text("Произошла ошибка при обработке голосового сообщения. Попробуйте еще раз.")
 
 # Обработчик команды hello
@@ -178,26 +219,33 @@ async def hello(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "- События в мире (спроси, что конкретно тебя интересует, и я постараюсь не закипеть)"
     )
     await update.message.reply_html(greeting_text, reply_markup=ForceReply(selective=True))
+    logger.info(f"Отправлено приветствие пользователю {user.id}")
 
 # Обработчик входящих сообщений
 async def handle_message(update: Update) -> None:
     if update.message and update.message.text:
         user_message = update.message.text
         user_id = update.effective_user.id
+        logger.info(f"Получено текстовое сообщение от пользователя {user_id}: {user_message}")
         response = generate_response(user_id, user_message)
         await update.message.reply_text(response)
     else:
-        logging.warning("Сообщение отсутствует или не содержит текста.")
+        logger.warning("Сообщение отсутствует или не содержит текста.")
         await update.message.reply_text("Произошла ошибка: сообщение отсутствует или не содержит текст.")
 
 # Основная функция запуска бота
 def main() -> None:
-    application = Application.builder().token(telegram_token).build()
-    application.add_handler(CommandHandler("hello", hello))
-    application.add_handler(CommandHandler("start", hello))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))  # Добавляем обработчик голосовых сообщений
-    application.run_polling()
+    try:
+        application = Application.builder().token(telegram_token).build()
+        application.add_handler(CommandHandler("hello", hello))
+        application.add_handler(CommandHandler("start", hello))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))  # Добавляем обработчик голосовых сообщений
+        logger.info("Бот запущен и готов к работе.")
+        application.run_polling()
+    except Exception as e:
+        logger.critical(f"Критическая ошибка при запуске бота: {e}", exc_info=True)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
