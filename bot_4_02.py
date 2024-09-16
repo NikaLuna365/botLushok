@@ -64,6 +64,9 @@ logger.info("Рабочая директория установлена.")
 # Извлечение текста из файлов .docx
 def extract_texts_from_files(directory):
     extracted_texts = []
+    if not os.path.exists(directory):
+        logger.warning(f"Директория {directory} не существует.")
+        return extracted_texts
     for root, dirs, files in os.walk(directory):
         for file in files:
             if file.endswith(".docx"):
@@ -74,8 +77,6 @@ def extract_texts_from_files(directory):
                     logger.info(f"Текст извлечён из файла: {file_path}")
                 except Exception as e:
                     logger.error(f"Ошибка при извлечении текста из файла {file_path}: {e}", exc_info=True)
-        else:
-            logger.warning(f"Нет файлов .docx в директории: {directory}")
     return extracted_texts
 
 # Пути к папке с файлами
@@ -129,8 +130,8 @@ def generate_response(user_id, user_input):
 
         history_context = f"{lushok_context}\n\nКонтекст:\n{' '.join(recent_history)}\nОтвет:"
 
-        # Используем доступную модель
-        model_name = "models/chat-bison-001"
+        # Используем корректное имя модели
+        model_name = "gemini-1.5-flash-latest"
 
         gen_response = genai.generate_text(
             prompt=history_context,
