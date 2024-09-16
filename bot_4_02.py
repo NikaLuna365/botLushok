@@ -132,6 +132,14 @@ def manage_history(user_id):
     history = history[-10:]
     user_histories[user_id] = history
 
+# Создаем экземпляр модели
+try:
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    logger.info("Модель Gemini загружена успешно.")
+except Exception as e:
+    logger.critical(f"Ошибка при загрузке модели Gemini: {e}", exc_info=True)
+    sys.exit(1)
+
 # Генерация ответа на основе контекста
 def generate_response(user_id, user_input):
     try:
@@ -145,7 +153,6 @@ def generate_response(user_id, user_input):
         recent_history = user_histories[user_id][-5:]
 
         history_context = f"{lushok_context}\n\nКонтекст:\n{' '.join(recent_history)}\nОтвет:"
-        model = genai.GenerativeModel("gemini-1.5-flash")
         gen_response = model.generate_content(history_context)
 
         if gen_response and gen_response.text:
@@ -222,7 +229,7 @@ async def hello(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"Отправлено приветствие пользователю {user.id}")
 
 # Обработчик входящих сообщений
-async def handle_message(update: Update) -> None:
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message and update.message.text:
         user_message = update.message.text
         user_id = update.effective_user.id
