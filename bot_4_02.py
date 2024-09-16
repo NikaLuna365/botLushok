@@ -149,7 +149,7 @@ def generate_response(user_id, user_input):
         # Генерация текста с использованием generate_text()
         gen_response = genai.generate_text(
             prompt=history_context,
-            model='models/text-bison-001'  # Замените на нужную вам модель
+            model='gemini-1.5-flash'  # Замените на нужную вам модель
         )
 
         if gen_response and gen_response.generations:
