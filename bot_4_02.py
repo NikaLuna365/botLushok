@@ -132,14 +132,6 @@ def manage_history(user_id):
     history = history[-10:]
     user_histories[user_id] = history
 
-# Создаем экземпляр модели
-try:
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    logger.info("Модель Gemini загружена успешно.")
-except Exception as e:
-    logger.critical(f"Ошибка при загрузке модели Gemini: {e}", exc_info=True)
-    sys.exit(1)
-
 # Генерация ответа на основе контекста
 def generate_response(user_id, user_input):
     try:
@@ -153,10 +145,15 @@ def generate_response(user_id, user_input):
         recent_history = user_histories[user_id][-5:]
 
         history_context = f"{lushok_context}\n\nКонтекст:\n{' '.join(recent_history)}\nОтвет:"
-        gen_response = model.generate_content(history_context)
 
-        if gen_response and gen_response.text:
-            response = gen_response.text.strip()
+        # Генерация текста с использованием generate_text()
+        gen_response = genai.generate_text(
+            prompt=history_context,
+            model='models/text-bison-001'  # Замените на нужную вам модель
+        )
+
+        if gen_response and gen_response.generations:
+            response = gen_response.generations[0].text.strip()
             response = remove_excess_emojis(response)
             user_histories[user_id].append(f"Bot: {response}")
             logger.info(f"Сгенерирован ответ для пользователя {user_id}: {response}")
@@ -218,7 +215,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
 async def hello(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     greeting_text = (
-        rf"Привет, {user.mention_html()}! Ну что, поехали?"
+        rf"Привет, {user.mention_html()}! Ну что, поехали?\n"
         "Можем потрещать на любую тему, выбирай:\n"
         "- Политика (тема вечных дискуссий и в конце кото-то точно кого-то сравнит с Гитлером)\n"
         "- О тебе (ну, рассказывай, что у тебя там)\n"
