@@ -113,13 +113,12 @@ user_histories = {}
 # Функция для удаления лишних смайликов
 def remove_excess_emojis(text):
     emoji_pattern = re.compile(
-        "["
+        "["  # Не используем сырую строку
         "\U0001F600-\U0001F64F"  # смайлики
         "\U0001F300-\U0001F5FF"  # символы и пиктограммы
         "\U0001F680-\U0001F6FF"  # транспорт и символы
         "\U0001F1E0-\U0001F1FF"  # флаги (iOS)
-        "]+", flags=re.UNICODE)
-
+        "]+")
     emojis_found = emoji_pattern.findall(text)
     if len(emojis_found) > 1:
         text = emoji_pattern.sub('', text, len(emojis_found) - 1)
@@ -149,7 +148,7 @@ def generate_response(user_id, user_input):
         # Генерация текста с использованием generate_text()
         gen_response = genai.generate_text(
             prompt=history_context,
-            model='gemini-1.5-flash'  # Замените на нужную вам модель
+            model='models/gemini-1.5-flash-latest'  # Используем нужную модель
         )
 
         if gen_response and gen_response.generations:
@@ -214,14 +213,13 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
 # Обработчик команды hello
 async def hello(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    greeting_text = (
-        rf"Привет, {user.mention_html()}! Ну что, поехали?\n"
-        "Можем потрещать на любую тему, выбирай:\n"
-        "- Политика (тема вечных дискуссий и в конце кото-то точно кого-то сравнит с Гитлером)\n"
-        "- О тебе (ну, рассказывай, что у тебя там)\n"
-        "- Жизнь (ах, та самая странная штука, о которой можно говорить часами)\n"
-        "- События в мире (спроси, что конкретно тебя интересует, и я постараюсь не закипеть)"
-    )
+    greeting_text = rf"""Привет, {user.mention_html()}! Ну что, поехали?
+Можем потрещать на любую тему, выбирай:
+- Политика (тема вечных дискуссий и в конце кто-то точно кого-то сравнит с Гитлером)
+- О тебе (ну, рассказывай, что у тебя там)
+- Жизнь (ах, та самая странная штука, о которой можно говорить часами)
+- События в мире (спроси, что конкретно тебя интересует, и я постараюсь не закипеть)
+"""
     await update.message.reply_html(greeting_text, reply_markup=ForceReply(selective=True))
     logger.info(f"Отправлено приветствие пользователю {user.id}")
 
