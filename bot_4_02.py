@@ -53,6 +53,13 @@ except ValueError as ve:
     logger.critical(f"Не удалось загрузить переменные окружения: {ve}")
     sys.exit(1)
 
+ # Вывод токенов в лог (безопаснее не выводить их, но для отладки можно временно):
+    logger.info(f"API_KEY: {api_key}")
+    logger.info(f"TELEGRAM_BOT_TOKEN: {telegram_token}")
+except ValueError as ve:
+    logger.critical(f"Не удалось загрузить переменные окружения: {ve}")
+    sys.exit(1)
+
 # Настройка модели генерации текста
 genai.configure(api_key=api_key)
 logger.info("Модель генерации текста настроена успешно.")
