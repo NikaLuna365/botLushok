@@ -77,7 +77,7 @@ def extract_texts_from_files(directory):
     return extracted_texts
 
 # Пути к папке с файлами
-directory_path = "C:/Games/work/2024К/BOT/TG_bot/data"
+directory_path = "data"
 texts = extract_texts_from_files(directory_path)
 
 # Объединяем все тексты в один для дальнейшего анализа
