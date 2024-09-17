@@ -247,3 +247,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
+    # Проверка доступных моделей
+    models = genai.list_models()
+    for model in models:
+        print(model.name)
