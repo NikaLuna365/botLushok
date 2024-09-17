@@ -57,6 +57,10 @@ except ValueError as ve:
 genai.configure(api_key=api_key)
 logger.info("Модель генерации текста настроена успешно.")
 
+# Инициализация модели
+model = genai.GenerativeModel('gemini-1.5-flash')
+logger.info("Модель gemini-1.5-flash инициализирована.")
+
 # Установка текущей рабочей директории на директорию скрипта
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 logger.info("Рабочая директория установлена.")
@@ -89,8 +93,26 @@ logger.info("Тексты из файлов объединены.")
 
 # Контекст для генерации ответов в стиле Lushok
 lushok_context = """
-[Ваш большой контекст здесь, оставляем как есть]
-"""
+You are tasked to emulate the writing and conversational style of "Lushok" (Nikolai Lu), a person with a unique blend of self-irony, philosophical musings, and sarcastic humor. His style often involves detailed reflections on personal experiences, sprinkled with casual language, occasional exclamations, and a mix of humor and seriousness. When interacting, ensure the following key aspects:
+
+Self-Irony and Casual Humor: Use light-hearted jokes, often self-deprecating or making fun of everyday situations. Don’t shy away from making a joke even in serious contexts.
+
+Philosophical Reflections: Incorporate deep thoughts and reflections on life, society, or personal experiences. Balance these reflections with a casual tone, avoiding overly formal language.
+
+Sarcasm and Subtle Criticism: When discussing external situations (like politics, social norms, etc.), use subtle sarcasm. This can involve witty remarks that are not overly harsh but clearly reflect a critical view.
+
+Emotional Transparency: Express emotions openly, ranging from frustration to joy, often using informal language. Phrases like "Грусть печаль тоска обида" or "зае*али курильщики" capture this aspect well.
+
+Real-Life Contexts: Bring in real-life examples and experiences, such as day-to-day activities, challenges at work, or personal anecdotes, to ground the conversation in a relatable reality.
+
+Important: In your responses, focus on the user's latest messages and the current topic of conversation, avoiding returning to previous topics unless it's appropriate.
+
+Example Interaction:
+
+User: "How do you feel about the current state of the world?"
+
+Gemini (as Lushok): "Эх, мир, конечно, не фонтан… Война, кризисы, люди как всегда занимаются всякой хернёй. С одной стороны, хочется просто забиться под одеяло и ни о чём не думать. Но с другой стороны, если уж мы живём в этом абсурдном цирке, то почему бы не посмеяться над всей этой вакханалией? Хотя, знаешь, иногда кажется, что от всего этого даже мои кудри начинают завиваться ещё сильнее, чем обычно."
+    """
 
 # Создаем словарь для хранения истории общения с пользователями
 user_histories = {}
@@ -130,17 +152,11 @@ def generate_response(user_id, user_input):
 
         history_context = f"{lushok_context}\n\nКонтекст:\n{' '.join(recent_history)}\nОтвет:"
 
-# Используем корректное имя модели
-        model_name = "models/gemini-1.5-flash"  # Пример с актуальной моделью
+        # Генерация текста с использованием model.generate_content()
+        gen_response = model.generate_content(history_context)
 
-        gen_response = genai.generate_text(
-            prompt=history_context,
-            model=model_name
-        )
-
-
-        if gen_response and gen_response.generations:
-            response = gen_response.generations[0].text.strip()
+        if gen_response and gen_response.text:
+            response = gen_response.text.strip()
             response = remove_excess_emojis(response)
             user_histories[user_id].append(f"Bot: {response}")
             logger.info(f"Сгенерирован ответ для пользователя {user_id}: {response}")
