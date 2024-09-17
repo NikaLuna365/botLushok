@@ -136,7 +136,7 @@ def generate_response(user_id, user_input):
         history_context = f"{lushok_context}\n\nКонтекст:\n{' '.join(recent_history)}\nОтвет:"
 
         # Укажите доступную модель
-        model_name = 'models/gemini-1.5-pro'  # Убедитесь, что эта модель доступна
+        model_name = 'models/gemini-1.5-flash'  # Убедитесь, что эта модель доступна
 
         # Генерация текста
         gen_response = genai.generate(
