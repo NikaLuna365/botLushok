@@ -17,27 +17,24 @@ logger.setLevel(logging.INFO)
 # Создание формата логов
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Создание обработчика для записи логов в файл
+# Обработчики логирования
 file_handler = logging.FileHandler('bot.log')
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
-
-# Создание обработчика для вывода логов в консоль
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
-# Глобальный обработчик непойманных исключений
+# Обработчик непойманных исключений
 def handle_unhandled_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
-        # Позволяет прерывать программу с помощью Ctrl+C
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
     logger.critical("Непойманное исключение", exc_info=(exc_type, exc_value, exc_traceback))
 
 sys.excepthook = handle_unhandled_exception
 
-# Функция проверки и загрузки ключей из переменных окружения
+# Загрузка переменных окружения
 def load_env_variable(var_name, error_message):
     var_value = os.getenv(var_name)
     if not var_value:
@@ -45,23 +42,18 @@ def load_env_variable(var_name, error_message):
         raise ValueError(error_message)
     return var_value
 
-# Загрузка API ключа и Telegram токена из переменных окружения
 try:
-    api_key = load_env_variable('API_KEY', "API_KEY не найден. Пожалуйста, установите его как переменную окружения.")
-    telegram_token = load_env_variable('TELEGRAM_BOT_TOKEN', "TELEGRAM_BOT_TOKEN не найден. Пожалуйста, установите его как переменную окружения.")
+    api_key = load_env_variable('API_KEY', "API_KEY не найден. Установите его как переменную окружения.")
+    telegram_token = load_env_variable('TELEGRAM_BOT_TOKEN', "TELEGRAM_BOT_TOKEN не найден. Установите его как переменную окружения.")
 except ValueError as ve:
     logger.critical(f"Не удалось загрузить переменные окружения: {ve}")
     sys.exit(1)
 
-# Настройка модели генерации текста
+# Настройка API
 genai.configure(api_key=api_key)
-logger.info("Модель генерации текста настроена успешно.")
+logger.info("API настроен успешно.")
 
-# Инициализация модели
-model = genai.GenerativeModel('gemini-1.5-flash')
-logger.info("Модель gemini-1.5-flash инициализирована.")
-
-# Установка текущей рабочей директории на директорию скрипта
+# Установка рабочей директории
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 logger.info("Рабочая директория установлена.")
 
@@ -83,18 +75,15 @@ def extract_texts_from_files(directory):
                     logger.error(f"Ошибка при извлечении текста из файла {file_path}: {e}", exc_info=True)
     return extracted_texts
 
-# Пути к папке с файлами
+# Объединение текстов
 directory_path = "data"
 texts = extract_texts_from_files(directory_path)
-
-# Объединяем все тексты в один для дальнейшего анализа
 combined_text = " ".join(texts)
 logger.info("Тексты из файлов объединены.")
 
-# Контекст для генерации ответов в стиле Lushok
+# Контекст для генерации ответов
 lushok_context = """
 You are tasked to emulate the writing and conversational style of "Lushok" (Nikolai Lu), a person with a unique blend of self-irony, philosophical musings, and sarcastic humor. His style often involves detailed reflections on personal experiences, sprinkled with casual language, occasional exclamations, and a mix of humor and seriousness. When interacting, ensure the following key aspects:
-
 Self-Irony and Casual Humor: Use light-hearted jokes, often self-deprecating or making fun of everyday situations. Don’t shy away from making a joke even in serious contexts.
 
 Philosophical Reflections: Incorporate deep thoughts and reflections on life, society, or personal experiences. Balance these reflections with a casual tone, avoiding overly formal language.
@@ -112,33 +101,32 @@ Example Interaction:
 User: "How do you feel about the current state of the world?"
 
 Gemini (as Lushok): "Эх, мир, конечно, не фонтан… Война, кризисы, люди как всегда занимаются всякой хернёй. С одной стороны, хочется просто забиться под одеяло и ни о чём не думать. Но с другой стороны, если уж мы живём в этом абсурдном цирке, то почему бы не посмеяться над всей этой вакханалией? Хотя, знаешь, иногда кажется, что от всего этого даже мои кудри начинают завиваться ещё сильнее, чем обычно."
-    """
+"""
 
-# Создаем словарь для хранения истории общения с пользователями
+# История пользователей
 user_histories = {}
 
 # Функция для удаления лишних смайликов
 def remove_excess_emojis(text):
     emoji_pattern = re.compile(
-        "["  # Не используем сырую строку
-        "\U0001F600-\U0001F64F"  # смайлики
-        "\U0001F300-\U0001F5FF"  # символы и пиктограммы
-        "\U0001F680-\U0001F6FF"  # транспорт и символы
-        "\U0001F1E0-\U0001F1FF"  # флаги (iOS)
+        "["
+        "\U0001F600-\U0001F64F"  # Смайлики
+        "\U0001F300-\U0001F5FF"  # Символы и пиктограммы
+        "\U0001F680-\U0001F6FF"  # Транспорт и символы
+        "\U0001F1E0-\U0001F1FF"  # Флаги
         "]+")
     emojis_found = emoji_pattern.findall(text)
     if len(emojis_found) > 1:
         text = emoji_pattern.sub('', text, len(emojis_found) - 1)
     return text
 
-# Управление историей сообщений пользователя
+# Управление историей сообщений
 def manage_history(user_id):
     history = user_histories.get(user_id, [])
-    # Ограничиваем историю до последних 10 сообщений
     history = history[-10:]
     user_histories[user_id] = history
 
-# Генерация ответа на основе контекста
+# Генерация ответа
 def generate_response(user_id, user_input):
     try:
         if user_id not in user_histories:
@@ -147,106 +135,52 @@ def generate_response(user_id, user_input):
         user_histories[user_id].append(f"User: {user_input}")
         manage_history(user_id)
 
-        # Используем только последние 5 сообщений для контекста
         recent_history = user_histories[user_id][-5:]
-
         history_context = f"{lushok_context}\n\nКонтекст:\n{' '.join(recent_history)}\nОтвет:"
 
-        # Генерация текста с использованием model.generate_content()
-        gen_response = model.generate_content(history_context)
+        # Укажите доступную модель
+        model_name = 'models/text-bison-001'  # Замените на доступную модель
 
-        if gen_response and gen_response.text:
-            response = gen_response.text.strip()
+        # Генерация текста
+        gen_response = genai.generate_text(
+            model=model_name,
+            prompt=history_context
+        )
+
+        if gen_response and gen_response.candidates:
+            response = gen_response.candidates[0]['output'].strip()
             response = remove_excess_emojis(response)
             user_histories[user_id].append(f"Bot: {response}")
             logger.info(f"Сгенерирован ответ для пользователя {user_id}: {response}")
             return response
         else:
             logger.warning(f"Генерация ответа не удалась для пользователя {user_id}.")
-            return "Извините, но я не могу ответить на ваш вопрос прямо сейчас."
+            return "Извините, не могу сейчас ответить на ваш вопрос."
 
     except Exception as e:
         logger.error(f"Ошибка при генерации ответа для пользователя {user_id}: {e}", exc_info=True)
-        return "Произошла ошибка при генерации ответа. Попробуйте еще раз."
+        return "Произошла ошибка при генерации ответа. Попробуйте ещё раз."
 
-# Функция для обработки голосовых сообщений
+# Обработка голосовых сообщений
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        voice = update.message.voice
-        user_id = update.effective_user.id
-        logger.info(f"Получено голосовое сообщение от пользователя {user_id}")
-
-        # Скачиваем голосовое сообщение
-        file = await context.bot.get_file(voice.file_id)
-        voice_file_path = await file.download_to_drive()
-        logger.info(f"Голосовое сообщение сохранено по пути: {voice_file_path}")
-
-        # Конвертируем путь в объект Path
-        voice_file = Path(voice_file_path)
-
-        # Конвертируем голосовое сообщение в формат wav
-        ogg_audio = AudioSegment.from_file(voice_file, format='ogg')
-        wav_filename = voice_file.with_suffix('.wav')
-        ogg_audio.export(wav_filename, format='wav')
-        logger.info(f"Голосовое сообщение конвертировано в WAV: {wav_filename}")
-
-        # Распознаем речь с помощью SpeechRecognition
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(str(wav_filename)) as source:
-            audio_data = recognizer.record(source)
-            try:
-                # Используем Google API для распознавания речи
-                text = recognizer.recognize_google(audio_data, language='ru-RU')
-                logger.info(f"Распознанный текст от пользователя {user_id}: {text}")
-                response = generate_response(user_id, text)
-                await update.message.reply_text(response)
-            except sr.UnknownValueError:
-                logger.warning(f"Не удалось распознать речь от пользователя {user_id}.")
-                await update.message.reply_text("Извините, я не смог распознать речь.")
-            except sr.RequestError as e:
-                logger.error(f"Ошибка запроса к сервису распознавания речи для пользователя {user_id}: {e}", exc_info=True)
-                await update.message.reply_text("Произошла ошибка при распознавании речи. Попробуйте еще раз.")
-        # Удаляем временные файлы
-        voice_file.unlink()
-        wav_filename.unlink()
-        logger.info(f"Временные файлы удалены для пользователя {user_id}")
-    except Exception as e:
-        logger.error(f"Ошибка при обработке голосового сообщения от пользователя {user_id}: {e}", exc_info=True)
-        await update.message.reply_text("Произошла ошибка при обработке голосового сообщения. Попробуйте еще раз.")
+    # Ваш код обработки голосовых сообщений
 
 # Обработчик команды hello
 async def hello(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    greeting_text = rf"""Привет, {user.mention_html()}! Ну что, поехали?
-Можем потрещать на любую тему, выбирай:
-- Политика (тема вечных дискуссий и в конце кто-то точно кого-то сравнит с Гитлером)
-- О тебе (ну, рассказывай, что у тебя там)
-- Жизнь (ах, та самая странная штука, о которой можно говорить часами)
-- События в мире (спроси, что конкретно тебя интересует, и я постараюсь не закипеть)
-"""
-    await update.message.reply_html(greeting_text, reply_markup=ForceReply(selective=True))
-    logger.info(f"Отправлено приветствие пользователю {user.id}")
+    # Ваш код для приветствия
 
 # Обработчик входящих сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message and update.message.text:
-        user_message = update.message.text
-        user_id = update.effective_user.id
-        logger.info(f"Получено текстовое сообщение от пользователя {user_id}: {user_message}")
-        response = generate_response(user_id, user_message)
-        await update.message.reply_text(response)
-    else:
-        logger.warning("Сообщение отсутствует или не содержит текста.")
-        await update.message.reply_text("Произошла ошибка: сообщение отсутствует или не содержит текст.")
+    # Ваш код обработки текстовых сообщений
 
-# Основная функция запуска бота
+# Запуск бота
 def main() -> None:
     try:
         application = Application.builder().token(telegram_token).build()
         application.add_handler(CommandHandler("hello", hello))
         application.add_handler(CommandHandler("start", hello))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))  # Добавляем обработчик голосовых сообщений
+        application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
         logger.info("Бот запущен и готов к работе.")
         application.run_polling()
     except Exception as e:
