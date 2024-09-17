@@ -163,15 +163,73 @@ def generate_response(user_id, user_input):
 
 # Обработка голосовых сообщений
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Ваш код обработки голосовых сообщений
+    try:
+        voice = update.message.voice
+        user_id = update.effective_user.id
+        logger.info(f"Получено голосовое сообщение от пользователя {user_id}")
+
+        # Скачиваем голосовое сообщение
+        file = await context.bot.get_file(voice.file_id)
+        voice_file_path = await file.download_to_drive()
+        logger.info(f"Голосовое сообщение сохранено по пути: {voice_file_path}")
+
+        # Конвертируем путь в объект Path
+        voice_file = Path(voice_file_path)
+
+        # Конвертируем голосовое сообщение в формат wav
+        ogg_audio = AudioSegment.from_file(voice_file, format='ogg')
+        wav_filename = voice_file.with_suffix('.wav')
+        ogg_audio.export(wav_filename, format='wav')
+        logger.info(f"Голосовое сообщение конвертировано в WAV: {wav_filename}")
+
+        # Распознаем речь с помощью SpeechRecognition
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(str(wav_filename)) as source:
+            audio_data = recognizer.record(source)
+            try:
+                # Используем Google API для распознавания речи
+                text = recognizer.recognize_google(audio_data, language='ru-RU')
+                logger.info(f"Распознанный текст от пользователя {user_id}: {text}")
+                response = generate_response(user_id, text)
+                await update.message.reply_text(response)
+            except sr.UnknownValueError:
+                logger.warning(f"Не удалось распознать речь от пользователя {user_id}.")
+                await update.message.reply_text("Извините, я не смог распознать речь.")
+            except sr.RequestError as e:
+                logger.error(f"Ошибка запроса к сервису распознавания речи для пользователя {user_id}: {e}", exc_info=True)
+                await update.message.reply_text("Произошла ошибка при распознавании речи. Попробуйте ещё раз.")
+        # Удаляем временные файлы
+        voice_file.unlink()
+        wav_filename.unlink()
+        logger.info(f"Временные файлы удалены для пользователя {user_id}")
+    except Exception as e:
+        logger.error(f"Ошибка при обработке голосового сообщения от пользователя {user_id}: {e}", exc_info=True)
+        await update.message.reply_text("Произошла ошибка при обработке голосового сообщения. Попробуйте ещё раз.")
 
 # Обработчик команды hello
 async def hello(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Ваш код для приветствия
+    user = update.effective_user
+    greeting_text = rf"""Привет, {user.mention_html()}! Ну что, поехали?
+Можем потрещать на любую тему, выбирай:
+- Политика (тема вечных дискуссий и в конце кто-то точно кого-то сравнит с Гитлером)
+- О тебе (ну, рассказывай, что у тебя там)
+- Жизнь (ах, та самая странная штука, о которой можно говорить часами)
+- События в мире (спроси, что конкретно тебя интересует, и я постараюсь не закипеть)
+"""
+    await update.message.reply_html(greeting_text, reply_markup=ForceReply(selective=True))
+    logger.info(f"Отправлено приветствие пользователю {user.id}")
 
 # Обработчик входящих сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Ваш код обработки текстовых сообщений
+    if update.message and update.message.text:
+        user_message = update.message.text
+        user_id = update.effective_user.id
+        logger.info(f"Получено текстовое сообщение от пользователя {user_id}: {user_message}")
+        response = generate_response(user_id, user_message)
+        await update.message.reply_text(response)
+    else:
+        logger.warning("Сообщение отсутствует или не содержит текста.")
+        await update.message.reply_text("Произошла ошибка: сообщение отсутствует или не содержит текст.")
 
 # Запуск бота
 def main() -> None:
@@ -189,11 +247,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-# Используйте правильную модель
-model_name = "models/ВАША_МОДЕЛЬ"  # Замените ВАША_МОДЕЛЬ на актуальную
-
-gen_response = genai.generate_text(
-    prompt=history_context,
-    model=model_name
-)
