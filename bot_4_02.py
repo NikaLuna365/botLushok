@@ -139,7 +139,7 @@ def generate_response(user_id, user_input):
         model_name = 'models/gemini-1.5-flash'  # Убедитесь, что эта модель доступна
 
         # Генерация текста
-        gen_response = genai.generate(
+        gen_response = genai.generate_text(
             model=model_name,
             prompt=history_context
         )
