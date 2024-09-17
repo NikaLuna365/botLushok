@@ -111,9 +111,6 @@ def remove_excess_emojis(text):
     emoji_pattern = re.compile(
         "["
         "\U0001F600-\U0001F64F"  # Смайлики
-        "\U0001F300-\U0001F5FF"  # Символы и пиктограммы
-        "\U0001F680-\U0001F6FF"  # Транспорт и символы
-        "\U0001F1E0-\U0001F1FF"  # Флаги
         "]+")
     emojis_found = emoji_pattern.findall(text)
     if len(emojis_found) > 1:
@@ -139,10 +136,10 @@ def generate_response(user_id, user_input):
         history_context = f"{lushok_context}\n\nКонтекст:\n{' '.join(recent_history)}\nОтвет:"
 
         # Укажите доступную модель
-        model_name = 'models/text-bison-001'  # Замените на доступную модель
+        model_name = 'models/gemini-1.5-pro'  # Убедитесь, что эта модель доступна
 
         # Генерация текста
-        gen_response = genai.generate_text(
+        gen_response = genai.generate(
             model=model_name,
             prompt=history_context
         )
@@ -247,8 +244,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
-    # Проверка доступных моделей
-    models = genai.list_models()
-    for model in models:
-        print(model.name)
