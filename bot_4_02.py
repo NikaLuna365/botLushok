@@ -189,3 +189,11 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# Используйте правильную модель
+model_name = "models/ВАША_МОДЕЛЬ"  # Замените ВАША_МОДЕЛЬ на актуальную
+
+gen_response = genai.generate_text(
+    prompt=history_context,
+    model=model_name
+)
