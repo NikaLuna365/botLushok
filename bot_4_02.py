@@ -138,14 +138,11 @@ def generate_response(user_id, user_input):
         recent_history = user_histories[user_id][-5:]
         history_context = f"{lushok_context}\n\nКонтекст:\n{' '.join(recent_history)}\nОтвет:"
 
-        # Укажите доступную модель
-        model_name = 'gemini-1.5-flash'  # Используем модель Gemini
+        # Создание модели
+        model = genai.GenerativeModel("gemini-1.5-flash")
 
         # Генерация текста
-        gen_response = genai.generate_text(
-            model=model_name,
-            prompt=history_context
-        )
+        gen_response = model.generate_content(prompt=history_context)
 
         if gen_response and gen_response.text:
             response = gen_response.text.strip()
