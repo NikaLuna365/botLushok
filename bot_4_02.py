@@ -155,4 +155,42 @@ def generate_response(user_id, user_input):
         return "Произошла ошибка при генерации ответа. Попробуйте ещё раз."
 
 # Обработчик команды hello
-async def hello(
+async def hello(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    greeting_text = rf"""Привет, {user.mention_html()}! Ну что, поехали?
+Можем потрещать на любую тему, выбирай:
+- Политика (тема вечных дискуссий и в конце кто-то точно кого-то сравнит с Гитлером)
+- О тебе (ну, рассказывай, что у тебя там)
+- Жизнь (ах, та самая странная штука, о которой можно говорить часами)
+- События в мире (спроси, что конкретно тебя интересует, и я постараюсь не закипеть)
+"""
+    await update.message.reply_html(greeting_text, reply_markup=ForceReply(selective=True))
+    logger.info(f"Отправлено приветствие пользователю {user.id}")
+
+# Обработчик входящих сообщений
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message and update.message.text:
+        user_message = update.message.text
+        user_id = update.effective_user.id
+        logger.info(f"Получено текстовое сообщение от пользователя {user_id}: {user_message}")
+        response = generate_response(user_id, user_message)
+        await update.message.reply_text(response)
+    else:
+        logger.warning("Сообщение отсутствует или не содержит текста.")
+        await update.message.reply_text("Произошла ошибка: сообщение отсутствует или не содержит текст.")
+
+# Запуск бота
+def main() -> None:
+    try:
+        application = Application.builder().token(telegram_token).build()
+        application.add_handler(CommandHandler("hello", hello))
+        application.add_handler(CommandHandler("start", hello))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        logger.info("Бот запущен и готов к работе.")
+        application.run_polling()
+    except Exception as e:
+        logger.critical(f"Критическая ошибка при запуске бота: {e}", exc_info=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
