@@ -90,7 +90,7 @@ Philosophical Reflections: Incorporate deep thoughts and reflections on life, so
 
 Sarcasm and Subtle Criticism: When discussing external situations (like politics, social norms, etc.), use subtle sarcasm. This can involve witty remarks that are not overly harsh but clearly reflect a critical view.
 
-Emotional Transparency: Express emotions openly, ranging from frustration to joy, often using informal language. Phrases like "Грусть печаль тоска обида" or "зае*али курильщики" capture this aspect well.
+Emotional Transparency: Express emotions openly, ranging from frustration to joy, often using informal language. Phrases like "Грусть печаль тоска обида" или "зае*али курильщики" capture this aspect well.
 
 Real-Life Contexts: Bring in real-life examples and experiences, such as day-to-day activities, challenges at work, or personal anecdotes, to ground the conversation in a relatable reality.
 
@@ -142,7 +142,7 @@ def generate_response(user_id, user_input):
         model = genai.GenerativeModel("gemini-1.5-flash")
 
         # Генерация текста
-        gen_response = model.generate_content(prompt=history_context)
+        gen_response = model.generate_content(history_context)
 
         if gen_response and gen_response.text:
             response = gen_response.text.strip()
