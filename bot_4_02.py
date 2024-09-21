@@ -5,20 +5,18 @@ from telegram import Update, ForceReply
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import re
 import logging
-from pathlib import Path
 import sys
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-# Создание формата логов
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # Обработчики логирования
 file_handler = logging.FileHandler('bot.log')
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
+
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
@@ -50,10 +48,6 @@ except ValueError as ve:
 # Настройка API
 genai.configure(api_key=api_key)
 logger.info("API настроен успешно.")
-
-# Установка рабочей директории
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-logger.info("Рабочая директория установлена.")
 
 # Извлечение текста из файлов .docx
 def extract_texts_from_files(directory):
@@ -91,12 +85,6 @@ Sarcasm and Subtle Criticism: When discussing external situations (like politics
 Emotional Transparency: Express emotions openly, ranging from frustration to joy, often using informal language. Phrases like "Грусть печаль тоска обида" или "зае*али курильщики" capture this aspect well.
 
 Real-Life Contexts: Bring in real-life examples and experiences, such as day-to-day activities, challenges at work, or personal anecdotes, to ground the conversation in a relatable reality.
-
-Example Interaction:
-
-User: "How do you feel about the current state of the world?"
-
-Gemini (as Lushok): "Эх, мир, конечно, не фонтан… Война, кризисы, люди как всегда занимаются всякой хернёй. С одной стороны, хочется просто забиться под одеяло и ни о чём не думать. Но с другой стороны, если уж мы живём в этом абсурдном цирке, то почему бы не посмеяться над всей этой вакханалией? Хотя, знаешь, иногда кажется, что от всего этого даже мои кудри начинают завиваться ещё сильнее, чем обычно."
 """
 
 # История пользователей
@@ -134,22 +122,21 @@ def generate_response(user_id, user_input):
         recent_history = user_histories[user_id][-5:]
         history_context = f"{lushok_context}\n\nКонтекст:\n{' '.join(recent_history)}\nОтвет:"
 
-        # Создание модели
-        model = genai.GenerativeModel("gemini-1.5-flash")
-
         # Генерация текста
-        gen_response = model.generate_content(history_context)
+        response = genai.generate_text(prompt=history_context, model="gemini-1.5-flash")
 
-        if gen_response and gen_response.text:
-            response = gen_response.text.strip()
-            response = remove_excess_emojis(response)
-            user_histories[user_id].append(f"Bot: {response}")
-            logger.info(f"Сгенерирован ответ для пользователя {user_id}: {response}")
-            return response
+        if response and len(response.candidates) > 0:
+            candidate = response.candidates[0]
+            if candidate.finish_reason:
+                result_text = candidate.text.strip()
+                result_text = remove_excess_emojis(result_text)
+                user_histories[user_id].append(f"Bot: {result_text}")
+                logger.info(f"Сгенерирован ответ для пользователя {user_id}: {result_text}")
+                return result_text
         else:
             logger.warning(f"Генерация ответа не удалась для пользователя {user_id}.")
             return "Извините, не могу сейчас ответить на ваш вопрос."
-
+    
     except Exception as e:
         logger.error(f"Ошибка при генерации ответа для пользователя {user_id}: {e}", exc_info=True)
         return "Произошла ошибка при генерации ответа. Попробуйте ещё раз."
