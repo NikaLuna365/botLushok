@@ -76,7 +76,7 @@ def extract_texts_from_files(directory):
     return extracted_texts
 
 # Чтение текста из файла data.txt
-file_path = "data/data.txt"
+file_path = "data.txt"
 
 # Чтение текста из файла
 with open(file_path, 'r', encoding='utf-8') as file:
