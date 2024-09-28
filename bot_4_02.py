@@ -190,4 +190,9 @@ def main() -> None:
 
         # Запуск polling для Telegram-бота
         application.run_polling()
-   
+    except Exception as e:
+        logger.critical(f"Критическая ошибка при запуске бота: {e}", exc_info=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
