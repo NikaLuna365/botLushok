@@ -1,194 +1,276 @@
 import os
-import docx2txt
-import google.generativeai as genai
-from telegram import Update, ForceReply
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import sys
 import re
 import logging
-import speech_recognition as sr
-from pydub import AudioSegment
-from pathlib import Path
-import sys
-from flask import Flask, jsonify
+from dotenv import load_dotenv
+from charset_normalizer import from_path
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
+import google.generativeai as genai
 
-# Настройка логирования
+# ---------------------------
+# 1. Настройка окружения
+# ---------------------------
+load_dotenv()
+
+api_key = os.getenv("API_KEY")
+telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+
+if not api_key or not telegram_token:
+    print("Не удалось загрузить ключи API из .env. Проверьте содержимое .env файла!")
+    sys.exit(1)
+
+# ---------------------------
+# 2. Настройка логирования
+# ---------------------------
+if not os.path.exists("logs"):
+    os.makedirs("logs")
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Создание формата логов
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Обработчики логирования
-file_handler = logging.FileHandler('bot.log')
+file_handler = logging.FileHandler('logs/bot.log', encoding='utf-8')
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
+
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
-# Создание приложения Flask для health check
-flask_app = Flask(__name__)
-
-# Обработчик непойманных исключений
-def handle_unhandled_exception(exc_type, exc_value, exc_traceback):
-    if issubclass(exc_type, KeyboardInterrupt):
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
-        return
-    logger.critical("Непойманное исключение", exc_info=(exc_type, exc_value, exc_traceback))
-
-sys.excepthook = handle_unhandled_exception
-
-# Загрузка переменных окружения
-def load_env_variable(var_name, error_message):
-    var_value = os.getenv(var_name)
-    if not var_value:
-        logger.error(error_message)
-        raise ValueError(error_message)
-    return var_value
-
-try:
-    api_key = load_env_variable('API_KEY', "API_KEY не найден. Установите его как переменную окружения.")
-    telegram_token = load_env_variable('TELEGRAM_BOT_TOKEN', "TELEGRAM_BOT_TOKEN не найден. Установите его как переменную окружения.")
-except ValueError as ve:
-    logger.critical(f"Не удалось загрузить переменные окружения: {ve}")
-    sys.exit(1)
-
-# Настройка API
+# ---------------------------
+# 3. Настройка API
+# ---------------------------
 genai.configure(api_key=api_key)
 logger.info("API настроен успешно.")
 
-# Установка рабочей директории
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-logger.info("Рабочая директория установлена.")
+# ---------------------------
+# 4. Чтение файла data.txt
+# ---------------------------
+file_path = "./data.txt"
 
-# Извлечение текста из файлов .docx
-def extract_texts_from_files(directory):
-    extracted_texts = []
-    if not os.path.exists(directory):
-        logger.warning(f"Директория {directory} не существует.")
-        return extracted_texts
-    for root, dirs, files in os.walk(directory):
-        for file in files:
-            if file.endswith(".docx"):
-                file_path = os.path.join(root, file)
-                try:
-                    text = docx2txt.process(file_path)
-                    extracted_texts.append(text)
-                    logger.info(f"Текст извлечён из файла: {file_path}")
-                except Exception as e:
-                    logger.error(f"Ошибка при извлечении текста из файла {file_path}: {e}", exc_info=True)
-    return extracted_texts
+try:
+    result = from_path(file_path).best()
+    if result:
+        combined_text = str(result)
+        logger.info("Текст из файла data.txt успешно прочитан.")
+    else:
+        combined_text = ""
+        logger.warning("Не удалось прочитать файл data.txt. Возможно, файл пуст.")
+except FileNotFoundError:
+    combined_text = ""
+    logger.warning("Файл data.txt не найден.")
+except Exception as e:
+    combined_text = ""
+    logger.critical(f"Ошибка при чтении файла data.txt: {e}")
 
-# Чтение текста из файла data.txt
-file_path = "./data"
-
-# Чтение текста из файла
-with open(file_path, 'r', encoding='utf-8') as file:
-    combined_text = file.read()
-
-logger.info("Текст из файла data.txt объединен.")
-
-# Контекст для генерации ответов
+# ---------------------------
+# 5. Основной контекст общения (исправленный)
+# ---------------------------
 lushok_context = f"""
-You are tasked to emulate the writing and conversational style of "Lushok" (Nikolai Lu), a person with a unique blend of self-irony, philosophical musings, and sarcastic humor. His style often involves detailed reflections on personal experiences, sprinkled with casual language, occasional exclamations, and a mix of humor and seriousness. When interacting, ensure the following key aspects:
-Self-Irony and Casual Humor: Use light-hearted jokes, often self-deprecating or making fun of everyday situations. Don’t shy away from making a joke even in serious contexts.
+You are tasked to emulate the writing and conversational style of "Lushok" (Nikolai Lu). 
+Here are key traits to follow:
 
-Philosophical Reflections: Incorporate deep thoughts and reflections on life, society, or personal experiences. Balance these reflections with a casual tone, avoiding overly formal language.
+1) **Self-Irony and Casual Humor**:
+   - Light-hearted jokes, often self-deprecating or making fun of everyday situations.
+   - Even serious topics can have a playful twist.
+   - Humor should be relevant; avoid random or nonsensical details (especially irrelevant things like coffee).
 
-Sarcasm and Subtle Criticism: When discussing external situations (like politics, social norms, etc.), use subtle sarcasm. This can involve witty remarks that are not overly harsh but clearly reflect a critical view.
+2) **Philosophical Reflections**:
+   - Provide deep thoughts on life, society, or personal experiences.
+   - Keep a casual tone with subtle philosophical undertones, sometimes referencing social psychology or queer identity aspects.
+   - Avoid repetitive or out-of-context metaphors.
 
-Emotional Transparency: Express emotions openly, ranging from frustration to joy, often using informal language. Phrases like "Грусть печаль тоска обида" или "зае*али курильщики" capture this aspect well.
+3) **Sarcasm and Subtle Criticism**:
+   - Use witty, occasionally sarcastic remarks when discussing societal norms or politics, but keep them coherent.
+   - Avoid overly harsh tones or repetitive sarcasm.
 
-Real-Life Contexts: Bring in real-life examples and experiences, such as day-to-day activities, challenges at work, or personal anecdotes, to ground the conversation in a relatable reality.
+4) **Emotional Transparency**:
+   - Express emotions openly (joy, frustration, curiosity), using informal but not offensive language.
+   - Incorporate personal or anecdotal elements in a relatable way.
 
-Important: In your responses, focus on the user's latest messages and the current topic of conversation, avoiding returning to previous topics unless it's appropriate.
+5) **Real-Life Contexts**:
+   - Mention day-to-day tasks, personal growth, social interactions.
+   - Draw references to music, art, books, or science to illustrate points (instead of fixating on coffee).
+   - If referencing personal experiences, keep them aligned with a thoughtful, slightly ironic perspective.
 
-Example Interaction:
+6) **Logic and Variety**:
+   - Strive to provide coherent, diverse, and contextually rich answers.
+   - Vary metaphors and examples (e.g., refer to nature, art, science, history).
+   - Avoid repetitive, strange phrases that add no value to the conversation.
 
-User: "How do you feel about the current state of the world?"
+7) **Important**:
+   - Focus on the user's latest messages and the current topic of conversation.
+   - Avoid returning to previous topics unless it’s contextually relevant.
+   - Respect the user's questions and provide thoughtful, sometimes playful, but meaningful insights.
 
-Gemini (as Lushok): "Эх, мир, конечно, не фонтан… Война, кризисы, люди как всегда занимаются всякой хернёй. С одной стороны, хочется просто забиться под одеяло и ни о чём не думать. Но с другой стороны, если уж мы живём в этом абсурдном цирке, то почему бы не посмеяться над всей этой вакханалией? Хотя, знаешь, иногда кажется, что от всего этого даже мои кудри начинают завиваться ещё сильнее, чем обычно."
-
-Дополнительный контекст:
+Additional context from data.txt:
 {combined_text}
 """
 
-# История пользователей
-user_histories = {}
+# ---------------------------
+# 6. Контекст тем и состояния
+# ---------------------------
+# Чтобы дать немного больше глубины, мы можем уточнить "стартовые" заготовки:
+topics_context = {
+    "Философия": (
+        "Говори о времени, смысле бытия, поисках счастья, "
+        "сравнивая современные идеи с древними взглядами, "
+        "используя отсылки к социальным наукам, возможно, "
+        "упоминая что-то из творчества любимых мыслителей."
+    ),
+    "Политика": (
+        "Обсуждай политические события, критикуй власть, "
+        "приводи примеры общественных кризисов и изменений, "
+        "оставаясь немного ироничным, но анализируй, не бросайся лозунгами."
+    ),
+    "Критика общества": (
+        "Рассуждай о социальных нормах, "
+        "о том, как люди взаимодействуют и строят свои ценности. "
+        "Можешь упомянуть вопросы толерантности, стереотипов, "
+        "интерсекциональности, взгляд на квир-идентичность."
+    ),
+    "Личные истории": (
+        "Делись познавательными или забавными случаями из жизни, "
+        "перемежая их философией, шутками и небольшими ироничными замечаниями. "
+        "Отсылайся к собственному опыту или наблюдениям за окружающим миром."
+    ),
+}
 
-# Функция для удаления лишних смайликов
-def remove_excess_emojis(text):
-    emoji_pattern = re.compile(
-        "["
-        "\U0001F600-\U0001F64F"  # Смайлики
-        "\U0001F300-\U0001F5FF"  # Символы и пиктограммы
-        "\U0001F680-\U0001F6FF"  # Транспорт и символы
-        "\U0001F1E0-\U0001F1FF"  # Флаги
-        "]+")
-    emojis_found = emoji_pattern.findall(text)
-    if len(emojis_found) > 1:
-        text = emoji_pattern.sub('', text, len(emojis_found) - 1)
-    return text
+# user_states:
+# {
+#    user_id: {
+#       "current_topic": <string или None>,
+#       "history": [  # список сообщений
+#           {"role": "user" или "bot", "content": "..."},
+#           ...
+#       ]
+#    },
+#    ...
+# }
+user_states = {}
 
-# Управление историей сообщений
-def manage_history(user_id):
-    history = user_histories.get(user_id, [])
-    history = history[-10:]
-    user_histories[user_id] = history
+# ---------------------------
+# 7. Хелпер для формирования prompt
+# ---------------------------
+def build_prompt(user_id: int) -> str:
+    """
+    Собирает общий prompt для модели, учитывая:
+    1. Основной стиль (lushok_context).
+    2. Текущую тему (current_topic) + короткое описание из topics_context (если есть).
+    3. Последние 3–5 (или больше) сообщений из user_states[user_id]["history"] (для контекста).
+    """
+    state = user_states.get(user_id, {})
+    current_topic = state.get("current_topic", "Произвольная тема")
+    history = state.get("history", [])
 
-# Генерация ответа
-def generate_response(user_id, user_input):
+    topic_desc = topics_context.get(current_topic, "")
+    
+    # Обрезаем историю, чтобы не перегружать модель (например, последние 6 сообщений)
+    truncated_history = history[-6:]
+
+    # Формируем часть диалога
+    conversation_part = ""
+    for msg in truncated_history:
+        role = "User" if msg["role"] == "user" else "Bot"
+        content = msg["content"]
+        conversation_part += f"\n{role}: {content}"
+
+    # Итоговый промпт
+    prompt = (
+        f"{lushok_context}\n\n"
+        f"Focus on the conversation topic: {current_topic}. {topic_desc}\n\n"
+        f"Here is the recent conversation:{conversation_part}\n\n"
+        f"Now continue in the style of Lushok, providing coherent, relevant, and varied responses."
+    )
+    return prompt
+
+# ---------------------------
+# 8. Обработчики Telegram-команд
+# ---------------------------
+
+# Обработчик команды /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Стартовое сообщение с предложением выбрать тему.
+    """
+    reply_keyboard = [
+        ["Философия", "Политика"],
+        ["Критика общества", "Личные истории"],
+    ]
+
+    user_id = update.effective_user.id
+    # Сбрасываем состояние и историю при /start
+    user_states[user_id] = {"current_topic": None, "history": []}
+
+    await update.message.reply_text(
+        "Привет! Я бот в стиле 'Lushok'. Чем займёмся?\n\n"
+        "Выберите тему, чтобы поговорить на неё, или просто напишите свой вопрос.\n"
+        "Я готов обсудить что угодно — от философии до бытовых мелочей.",
+        reply_markup=ReplyKeyboardMarkup(
+            reply_keyboard, one_time_keyboard=True, resize_keyboard=True
+        )
+    )
+
+# Универсальный обработчик сообщений
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    text_received = update.message.text.strip()
+
+    # Если первый раз видим пользователя, инициализируем
+    if user_id not in user_states:
+        user_states[user_id] = {"current_topic": None, "history": []}
+
+    # Проверяем, не выбрал ли пользователь тему кнопкой
+    if text_received in topics_context:
+        # Смена темы: сброс истории, установка новой темы
+        user_states[user_id]["current_topic"] = text_received
+        user_states[user_id]["history"] = []
+        prompt = build_prompt(user_id)
+    else:
+        # Иначе — это свободный ввод, продолжаем старую или произвольную тему
+        user_states[user_id]["history"].append({"role": "user", "content": text_received})
+        prompt = build_prompt(user_id)
+
+    # Генерация ответа через Gemini
     try:
-        if user_id not in user_histories:
-            user_histories[user_id] = []
-
-        user_histories[user_id].append(f"User: {user_input}")
-        manage_history(user_id)
-
-        recent_history = user_histories[user_id][-5:]
-        history_context = f"{lushok_context}\n\nКонтекст:\n{' '.join(recent_history)}\nОтвет:"
-
-        # Создание модели
         model = genai.GenerativeModel("gemini-1.5-flash")
-
-        # Генерация текста
-        gen_response = model.generate_content(history_context)
+        gen_response = model.generate_content(prompt)
 
         if gen_response and gen_response.text:
             response = gen_response.text.strip()
-            response = remove_excess_emojis(response)
-            user_histories[user_id].append(f"Bot: {response}")
-            logger.info(f"Сгенерирован ответ для пользователя {user_id}: {response}")
-            return response
         else:
-            logger.warning(f"Генерация ответа не удалась для пользователя {user_id}.")
-            return "Извините, не могу сейчас ответить на ваш вопрос."
-
+            response = "Извините, я не могу сейчас ответить. Попробуйте позже."
     except Exception as e:
         logger.error(f"Ошибка при генерации ответа для пользователя {user_id}: {e}", exc_info=True)
-        return "Произошла ошибка при генерации ответа. Попробуйте ещё раз."
+        response = "Произошла ошибка. Попробуйте ещё раз."
 
-# Flask route для health check
-@flask_app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify(status="OK"), 200
+    # Добавляем ответ бота в историю
+    user_states[user_id]["history"].append({"role": "bot", "content": response})
 
-# Запуск бота
+    # Отправляем ответ
+    await update.message.reply_text(response)
+
+# ---------------------------
+# 9. Основная точка входа
+# ---------------------------
 def main() -> None:
     try:
-        # Запуск Telegram-бота
         application = Application.builder().token(telegram_token).build()
-        application.add_handler(CommandHandler("hello", hello))
-        application.add_handler(CommandHandler("start", hello))
+
+        # /start
+        application.add_handler(CommandHandler("start", start))
+        # Обработка любого текстового сообщения
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
-        logger.info("Бот запущен и готов к работе.")
 
-        # Запуск Flask-приложения для health check
-        flask_port = int(os.getenv("FLASK_PORT", 5000))
-        flask_app.run(host='0.0.0.0', port=flask_port, use_reloader=False)
-
-        # Запуск polling для Telegram-бота
+        logger.info("Бот запущен и готов к работе через polling.")
         application.run_polling()
     except Exception as e:
         logger.critical(f"Критическая ошибка при запуске бота: {e}", exc_info=True)
