@@ -1,19 +1,17 @@
-# Используем базовый образ Python
-FROM python:3.9-slim
+# Используем базовый образ Python 3.11 (slim версия)
+FROM python:3.11-slim
 
-# Устанавливаем ffmpeg и необходимые системные пакеты
-RUN apt-get update && apt-get install -y ffmpeg
+# Устанавливаем системные зависимости (например, ffmpeg)
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем файл с зависимостями
+# Копируем файл зависимостей и устанавливаем их
 COPY requirements.txt .
+RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
-# Устанавливаем Python зависимости
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Копируем все файлы проекта в контейнер
+# Копируем весь код проекта
 COPY . .
 
 # Команда для запуска бота
