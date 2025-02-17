@@ -122,6 +122,9 @@ topics_context = {
 
 user_states = {}
 
+# ADDED: Счётчик сообщений по чатам (где ключ — это chat_id)
+chat_message_counter = {}
+
 # 7. Хелпер для формирования prompt
 def build_prompt(user_id: int) -> str:
     state = user_states.get(user_id, {})
@@ -158,30 +161,64 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ADDED/UPDATED: логика для обработки группы vs личный чат
+    chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     text_received = update.message.text.strip()
-    
+
+    # Если бот не знает этого user_id, инициализируем состояние
     if user_id not in user_states:
         user_states[user_id] = {"current_topic": None, "history": []}
-    
+
+    # Если пользователь ввёл команду выбора темы
     if text_received in topics_context:
         user_states[user_id]["current_topic"] = text_received
         user_states[user_id]["history"] = []
+        await update.message.reply_text(f"Тема переключена на: {text_received}")
+        return
+
+    # Сохраняем сообщение в истории (для контекста), но отвечать будем не всегда
+    user_states[user_id]["history"].append({"role": "user", "content": text_received})
+
+    # Если это наш целевой чат -1001708694298
+    if chat_id == -1001708694298:
+        # Инициализируем счётчик, если не было
+        if chat_id not in chat_message_counter:
+            chat_message_counter[chat_id] = 0
+        
+        # Увеличиваем счётчик для этого чата
+        chat_message_counter[chat_id] += 1
+
+        # Если сообщение пятое, отвечаем
+        if chat_message_counter[chat_id] % 5 == 0:
+            try:
+                model = genai.GenerativeModel("gemini-1.5-flash")
+                prompt = build_prompt(user_id)
+                gen_response = model.generate_content(prompt)
+                response = gen_response.text.strip() if gen_response and gen_response.text else "Извините, я не могу сейчас ответить."
+            except Exception as e:
+                logger.error(f"Ошибка при генерации ответа для пользователя {user_id}: {e}", exc_info=True)
+                response = "Произошла ошибка. Попробуйте ещё раз."
+            
+            # Добавляем ответ бота в историю
+            user_states[user_id]["history"].append({"role": "bot", "content": response})
+            await update.message.reply_text(response)
+        else:
+            # Если не пятое — просто не отвечаем
+            return
     else:
-        user_states[user_id]["history"].append({"role": "user", "content": text_received})
-    
-    prompt = build_prompt(user_id)
-    
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        gen_response = model.generate_content(prompt)
-        response = gen_response.text.strip() if gen_response and gen_response.text else "Извините, я не могу сейчас ответить. Попробуйте позже."
-    except Exception as e:
-        logger.error(f"Ошибка при генерации ответа для пользователя {user_id}: {e}", exc_info=True)
-        response = "Произошла ошибка. Попробуйте ещё раз."
-    
-    user_states[user_id]["history"].append({"role": "bot", "content": response})
-    await update.message.reply_text(response)
+        # Логика для ЛС или других чатов: бот продолжает отвечать на каждое сообщение, как и прежде
+        try:
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            prompt = build_prompt(user_id)
+            gen_response = model.generate_content(prompt)
+            response = gen_response.text.strip() if gen_response and gen_response.text else "Извините, я не могу сейчас ответить."
+        except Exception as e:
+            logger.error(f"Ошибка при генерации ответа для пользователя {user_id}: {e}", exc_info=True)
+            response = "Произошла ошибка. Попробуйте ещё раз."
+        
+        user_states[user_id]["history"].append({"role": "bot", "content": response})
+        await update.message.reply_text(response)
 
 # 9. Основная точка входа
 def main() -> None:
@@ -197,4 +234,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
