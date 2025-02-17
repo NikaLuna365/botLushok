@@ -1,7 +1,6 @@
 import os
 import sys
 import logging
-import base64
 from dotenv import load_dotenv
 from charset_normalizer import from_path
 from telegram import Update, ReplyKeyboardMarkup
@@ -121,12 +120,11 @@ topics_context = {
     ),
 }
 
-# Словарь для хранения состояний пользователей
 user_states = {}
 
 # 7. Хелпер для формирования prompt
 def build_prompt(user_id: int) -> str:
-    state = user_states.get(user_id, {"current_topic": "Произвольная тема", "history": []})
+    state = user_states.get(user_id, {})
     current_topic = state.get("current_topic", "Произвольная тема")
     history = state.get("history", [])
     topic_desc = topics_context.get(current_topic, "")
@@ -145,7 +143,7 @@ def build_prompt(user_id: int) -> str:
     )
     return prompt
 
-# 8. Обработчик команды /start
+# 8. Обработчики Telegram-команд
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_keyboard = [
         ["Философия", "Политика"],
@@ -159,7 +157,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
 
-# 9. Обработчик текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text_received = update.message.text.strip()
@@ -186,90 +183,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_states[user_id]["history"].append({"role": "bot", "content": response})
     await update.message.reply_text(response)
 
-# 10. Обработчик фотографий
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    
-    # Если состояние пользователя не инициализировано, создаем его
-    if user_id not in user_states:
-        user_states[user_id] = {"current_topic": None, "history": []}
-    
-    # Берем самое большое фото (последний элемент в списке)
-    photo = update.message.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-    
-    # Сохраняем фото во временный файл
-    temp_file_path = f"temp_{photo.file_id}.jpg"
-    await file.download_to_drive(custom_path=temp_file_path)
-    
-    # Определяем режим ответа по наличию слова "подпись" в caption
-    caption = update.message.caption.lower() if update.message.caption else ""
-    mode = "extended" if "подпись" in caption else "short"
-    
-    try:
-        # Читаем файл и кодируем изображение в base64
-        with open(temp_file_path, "rb") as f:
-            img_data = f.read()
-        img_base64 = base64.b64encode(img_data).decode("utf-8")
-        
-        # Формируем текстовый контекст (prompt) на основе истории диалога
-        prompt_text = build_prompt(user_id)
-        
-        # Добавляем инструкцию для обработки изображения
-        image_instructions = (
-            f"{prompt_text}\n\n"
-            "Вложения: изображение. "
-            "Опиши или интерпретируй его на русском языке, сохраняя стиль Lushok. "
-            f"Режим ответа: {mode}."
-        )
-        
-        # Формируем мультимодальный запрос
-        multimodal_request = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": image_instructions},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": img_base64
-                            }
-                        }
-                    ]
-                }
-            ]
-        }
-        
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        gen_response = model.generate_content(**multimodal_request)
-        
-        if gen_response and gen_response.text:
-            response_text = gen_response.text.strip()
-        else:
-            response_text = "Извините, не удалось получить ответ по изображению."
-        
-        # Сохраняем событие в истории диалога
-        user_states[user_id]["history"].append({"role": "user", "content": "[Изображение]"})
-        user_states[user_id]["history"].append({"role": "bot", "content": response_text})
-    except Exception as e:
-        logger.error(f"Ошибка при обработке изображения для пользователя {user_id}: {e}", exc_info=True)
-        response_text = "Произошла ошибка при обработке изображения. Попробуйте позже."
-    finally:
-        # Удаляем временный файл
-        try:
-            os.remove(temp_file_path)
-        except Exception as e:
-            logger.warning(f"Не удалось удалить временный файл {temp_file_path}: {e}")
-    
-    await update.message.reply_text(response_text)
-
-# 11. Основная точка входа
+# 9. Основная точка входа
 def main() -> None:
     try:
         application = Application.builder().token(telegram_token).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
         logger.info("Бот запущен и готов к работе через polling.")
         application.run_polling()
     except Exception as e:
@@ -278,3 +197,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
