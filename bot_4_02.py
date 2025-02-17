@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+import random  # <-- для генерации вероятности
 from dotenv import load_dotenv
 from charset_normalizer import from_path
 from telegram import Update, ReplyKeyboardMarkup
@@ -13,7 +14,7 @@ from telegram.ext import (
 )
 import google.generativeai as genai
 
-# 1. Настройка окружения
+# 1. Загрузка переменных окружения
 load_dotenv()
 
 api_key = os.getenv("API_KEY")
@@ -43,7 +44,7 @@ logger.addHandler(console_handler)
 genai.configure(api_key=api_key)
 logger.info("API настроен успешно.")
 
-# 4. Чтение файла data.txt
+# 4. Чтение файла data.txt (если есть дополнительные материалы)
 file_path = "./data.txt"
 try:
     result = from_path(file_path).best()
@@ -60,167 +61,106 @@ except Exception as e:
     combined_text = ""
     logger.critical(f"Ошибка при чтении файла data.txt: {e}")
 
-# 5. Основной контекст общения
-lushok_context = f"""
-You are tasked to emulate the writing and conversational style of "Lushok" (Nikolai Lu). 
-Here are key traits to follow:
+# 5. Основной «русский» контекст для ИИ
+# Здесь мы описываем всю логику поведения, стиль общения и т.д.
+russian_lushok_context = f"""
+Ты выступаешь в роли «Лушок» (Nikolai Lu). Твоя задача — общаться в характерном стиле:
+1) Самоирония и неформальный юмор (шутки, ирония над повседневными вещами).
+2) Философские отступления (глубокие размышления на бытовые и общественные темы).
+3) Лёгкая саркастичность и критика (но без чрезмерной грубости).
+4) Эмоциональная открытость (говоришь о чувствах, но без лишней пошлости).
+5) Упоминание реальных примеров из жизни, науки, культуры.
+6) Логичные, разнообразные ответы, без навязчивых повторов.
 
-1) **Self-Irony and Casual Humor**:
-   - Light-hearted jokes, often self-deprecating or making fun of everyday situations.
-   - Even serious topics can have a playful twist.
-   - Humor should be relevant; avoid random or nonsensical details.
+ВНИМАНИЕ: В коде бота заложена логика:
+- Если пользователь отвечает (reply) на сообщение бота, бот отвечает с вероятностью 100%.
+- Если пользователь просто пишет новое сообщение (не reply), бот отвечает с вероятностью 20%.
 
-2) **Philosophical Reflections**:
-   - Provide deep thoughts on life, society, or personal experiences.
-   - Keep a casual tone with subtle philosophical undertones.
-   - Avoid repetitive or out-of-context metaphors.
+То есть, если тебе всё же пришёл запрос на генерацию ответа, значит проверка «вероятности» в коде уже пройдена. Твоя задача — всегда формировать осмысленный ответ, соответствующий стилю «Лушок».
 
-3) **Sarcasm and Subtle Criticism**:
-   - Use witty, occasionally sarcastic remarks when discussing societal norms or politics.
-   - Avoid overly harsh tones or repetitive sarcasm.
-
-4) **Emotional Transparency**:
-   - Express emotions openly using informal, non-offensive language.
-   - Incorporate personal anecdotes in a relatable way.
-
-5) **Real-Life Contexts**:
-   - Mention day-to-day tasks and personal growth.
-   - Use references to art, books, or science to illustrate points.
-
-6) **Logic and Variety**:
-   - Provide coherent, diverse, and contextually rich responses.
-   - Vary metaphors and examples.
-   - Avoid repetitive phrases that add no value.
-
-7) **Important**:
-   - Focus on the user's latest messages and the current topic.
-   - Avoid returning to previous topics unless contextually relevant.
-   - Respect the user's questions and provide thoughtful, sometimes playful, insights.
-
-Additional context from data.txt:
+Также у нас есть дополнительный контент из файла data.txt, который может обогащать ответы:
 {combined_text}
 """
 
-# 6. Контекст тем и состояния
-topics_context = {
-    "Философия": (
-        "Говори о времени, смысле бытия, поисках счастья, "
-        "сравнивая современные идеи с древними взглядами."
-    ),
-    "Политика": (
-        "Обсуждай политические события, критикуй власть, "
-        "приводи примеры общественных кризисов, оставаясь ироничным."
-    ),
-    "Критика общества": (
-        "Рассуждай о социальных нормах, стереотипах и ценностях."
-    ),
-    "Личные истории": (
-        "Делись познавательными или забавными случаями из жизни, "
-        "перемежая их философией и иронией."
-    ),
-}
+# 6. Хранение последних 5 сообщений в каждом чате
+# Ключ: chat_id, значение: список { "user": user_id, "text": "..." }
+chat_context = {}
 
-user_states = {}
-
-# ADDED: Счётчик сообщений по чатам (где ключ — это chat_id)
-chat_message_counter = {}
-
-# 7. Хелпер для формирования prompt
-def build_prompt(user_id: int) -> str:
-    state = user_states.get(user_id, {})
-    current_topic = state.get("current_topic", "Произвольная тема")
-    history = state.get("history", [])
-    topic_desc = topics_context.get(current_topic, "")
+# 7. Формирование промпта с учётом последних 5 сообщений чата
+def build_prompt(chat_id: int) -> str:
+    messages = chat_context.get(chat_id, [])
+    # Берём максимум 5 последних
+    last_five = messages[-5:]
     
-    truncated_history = history[-6:]
+    # Собираем «контекст» из последних сообщений
     conversation_part = ""
-    for msg in truncated_history:
-        role = "User" if msg["role"] == "user" else "Bot"
-        conversation_part += f"\n{role}: {msg['content']}"
-        
+    for msg in last_five:
+        conversation_part += f"Пользователь {msg['user']}: {msg['text']}\n"
+    
+    # Общий промпт
     prompt = (
-        f"{lushok_context}\n\n"
-        f"Focus on the conversation topic: {current_topic}. {topic_desc}\n\n"
-        f"Here is the recent conversation:{conversation_part}\n\n"
-        "Now continue in the style of Lushok, providing coherent, relevant, and varied responses."
+        f"{russian_lushok_context}\n\n"
+        "Вот последние сообщения в чате (не более 5):\n"
+        f"{conversation_part}\n"
+        "Продолжай диалог в стиле Лушок, учитывая всю логику выше."
     )
     return prompt
 
-# 8. Обработчики Telegram-команд
+# 8. Обработчики
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_keyboard = [
         ["Философия", "Политика"],
         ["Критика общества", "Личные истории"],
     ]
-    user_id = update.effective_user.id
-    user_states[user_id] = {"current_topic": None, "history": []}
     await update.message.reply_text(
-        "Привет! Я бот, пытающийся общаться в стиле Николая Лу. Чем займёмся?\n\n"
-        "Выберите тему или напишите свой вопрос.",
+        "Привет! Я бот, пытающийся общаться в стиле Николая Лу.\n\n"
+        "Можешь выбрать тему или просто напиши свой вопрос.",
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ADDED/UPDATED: логика для обработки группы vs личный чат
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     text_received = update.message.text.strip()
+    
+    # Сохраняем сообщение в истории чата
+    if chat_id not in chat_context:
+        chat_context[chat_id] = []
+    chat_context[chat_id].append({"user": user_id, "text": text_received})
+    # Обрезаем, чтобы хранилось не более 5 сообщений
+    if len(chat_context[chat_id]) > 5:
+        chat_context[chat_id].pop(0)
 
-    # Если бот не знает этого user_id, инициализируем состояние
-    if user_id not in user_states:
-        user_states[user_id] = {"current_topic": None, "history": []}
+    # Проверяем, является ли сообщение ответом на сообщение бота
+    is_reply_to_bot = (
+        update.message.reply_to_message
+        and update.message.reply_to_message.from_user
+        and update.message.reply_to_message.from_user.id == context.bot.id
+    )
 
-    # Если пользователь ввёл команду выбора темы
-    if text_received in topics_context:
-        user_states[user_id]["current_topic"] = text_received
-        user_states[user_id]["history"] = []
-        await update.message.reply_text(f"Тема переключена на: {text_received}")
-        return
-
-    # Сохраняем сообщение в истории (для контекста), но отвечать будем не всегда
-    user_states[user_id]["history"].append({"role": "user", "content": text_received})
-
-    # Если это наш целевой чат -1001708694298
-    if chat_id == -1001708694298:
-        # Инициализируем счётчик, если не было
-        if chat_id not in chat_message_counter:
-            chat_message_counter[chat_id] = 0
-        
-        # Увеличиваем счётчик для этого чата
-        chat_message_counter[chat_id] += 1
-
-        # Если сообщение пятое, отвечаем
-        if chat_message_counter[chat_id] % 5 == 0:
-            try:
-                model = genai.GenerativeModel("gemini-1.5-flash")
-                prompt = build_prompt(user_id)
-                gen_response = model.generate_content(prompt)
-                response = gen_response.text.strip() if gen_response and gen_response.text else "Извините, я не могу сейчас ответить."
-            except Exception as e:
-                logger.error(f"Ошибка при генерации ответа для пользователя {user_id}: {e}", exc_info=True)
-                response = "Произошла ошибка. Попробуйте ещё раз."
-            
-            # Добавляем ответ бота в историю
-            user_states[user_id]["history"].append({"role": "bot", "content": response})
-            await update.message.reply_text(response)
-        else:
-            # Если не пятое — просто не отвечаем
+    # Логика вероятности: если не reply, то 20%, иначе 100%
+    if not is_reply_to_bot:
+        # Случайное число от 0 до 1
+        chance = random.random()
+        # Если больше 0.2 => не отвечаем
+        if chance > 0.2:
             return
-    else:
-        # Логика для ЛС или других чатов: бот продолжает отвечать на каждое сообщение, как и прежде
-        try:
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            prompt = build_prompt(user_id)
-            gen_response = model.generate_content(prompt)
-            response = gen_response.text.strip() if gen_response and gen_response.text else "Извините, я не могу сейчас ответить."
-        except Exception as e:
-            logger.error(f"Ошибка при генерации ответа для пользователя {user_id}: {e}", exc_info=True)
-            response = "Произошла ошибка. Попробуйте ещё раз."
-        
-        user_states[user_id]["history"].append({"role": "bot", "content": response})
-        await update.message.reply_text(response)
 
-# 9. Основная точка входа
+    # Если дошли сюда — бот генерирует ответ
+    prompt = build_prompt(chat_id)
+    
+    try:
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        gen_response = model.generate_content(prompt)
+        response = gen_response.text.strip() if gen_response and gen_response.text else "Извините, у меня нет ответа."
+    except Exception as e:
+        logger.error(f"Ошибка при генерации ответа: {e}", exc_info=True)
+        response = "Произошла ошибка. Попробуйте ещё раз."
+    
+    # Отправляем ответ
+    await update.message.reply_text(response)
+
+# 9. Запуск бота
 def main() -> None:
     try:
         application = Application.builder().token(telegram_token).build()
