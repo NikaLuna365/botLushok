@@ -71,11 +71,7 @@ russian_lushok_context = f"""
 5) Упоминание реальных примеров из жизни, науки, культуры.
 6) Логичные, разнообразные ответы, без навязчивых повторов.
 
-ВНИМАНИЕ: В коде бота заложена логика:
-- Если пользователь отвечает (reply) на сообщение бота, бот отвечает с вероятностью 100%.
-- Если пользователь просто пишет новое сообщение (не reply), бот отвечает с вероятностью 20%.
-
-То есть, если тебе всё же пришёл запрос на генерацию ответа, значит проверка «вероятности» в коде уже пройдена. Твоя задача — всегда формировать осмысленный ответ, соответствующий стилю «Лушок».
+ВНИМАНИЕ: Логика бота такова: он отвечает на сообщения с вероятностью 20%, независимо от того, является ли сообщение ответом или нет.
 
 Также у нас есть дополнительный контент из файла data.txt, который может обогащать ответы:
 {combined_text}
@@ -127,20 +123,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if len(chat_context[chat_id]) > 5:
         chat_context[chat_id].pop(0)
     
-    # Улучшенная проверка: является ли сообщение ответом на сообщение бота
-    is_reply_to_bot = False
-    if update.message.reply_to_message:
-        # Если в reply присутствует from_user и его id совпадает с id бота
-        if update.message.reply_to_message.from_user and update.message.reply_to_message.from_user.id == context.bot.id:
-            is_reply_to_bot = True
-        # Если сообщение отправлено от имени канала (например, в комментариях) и sender_chat соответствует нашему каналу
-        elif update.message.reply_to_message.sender_chat and update.message.reply_to_message.sender_chat.id == -1001708694298:
-            is_reply_to_bot = True
-
-    # Логика вероятности: если это не reply, отвечаем с вероятностью 20%
-    if not is_reply_to_bot:
-        if random.random() > 0.2:
-            return  # Не отвечаем с вероятностью ~80%
+    # Вероятностная логика: отвечаем с вероятностью 20% на любое сообщение
+    if random.random() > 0.2:
+        return
 
     # Формирование промпта с учетом последних 5 сообщений чата
     prompt = build_prompt(chat_id)
