@@ -1,8 +1,13 @@
 services:
   bot:
     build: .
+    container_name: botlushok
+    # Загружаем переменные окружения из внешнего файла .env,
+    # который вы заранее загрузите на сервер (он не включается в образ)
     env_file:
       - .env
-    volumes:
-      - ./logs:/app/logs
+    # Если нужно, можно явно передать переменные (они будут подставлены из .env)
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - API_KEY=${API_KEY}
     restart: always
