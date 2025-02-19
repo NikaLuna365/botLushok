@@ -2,7 +2,7 @@ services:
   bot:
     build: .
     env_file:
-      - .утм
+      - .env
     volumes:
       - ./logs:/app/logs
     restart: always
