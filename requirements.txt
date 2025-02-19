@@ -1,5 +1,5 @@
 python-telegram-bot==20.3
-google-generativeai==1.0.0
+google-generativeai==0.8.4
 vosk==0.3.45
 Pillow==9.4.0
 pytesseract==0.3.10
