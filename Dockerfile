@@ -1,18 +1,28 @@
-# Используем базовый образ Python 3.11 (slim версия)
-FROM python:3.11-slim
+FROM python:3.9-slim
 
-# Устанавливаем системные зависимости (например, ffmpeg)
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    tesseract-ocr \
+    tesseract-ocr-rus \
+    libmagic1 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем рабочую директорию
+# Установка дополнительных утилит (если потребуется для ffmpeg)
+# RUN apt-get install -y <дополнительные-пакеты>
+
+# Установка рабочей директории
 WORKDIR /app
 
-# Копируем файл зависимостей и устанавливаем их
+# Копирование файла зависимостей и установка pip-зависимостей
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем весь код проекта
+# Копирование всего исходного кода
 COPY . .
 
-# Команда для запуска бота
+# Определяем volume для логов (чтобы они сохранялись вне контейнера)
+VOLUME ["/app/logs"]
+
+# Запуск бота
 CMD ["python", "bot_4_02.py"]
