@@ -1,17 +1,68 @@
-# Игнорировать байт-код Python
+# Python bytecode
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 
-# Виртуальное окружение
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage*
+.cache
+nosetests.xml
+coverage.xml
+
+# Translations
+*.mo
+*.pot
+
+# Virtual environments
+.env
+.venv
 env/
-.venv/
+venv/
+ENV/
+env.bak/
+venv.bak/
 
-# Логи и временные файлы
-logs/
-*.log
-tmp/
+# IDE / Editor directories and files
+.idea/
+.vscode/
+.spyderproject
+.ropeproject
 
-# Файл с ключами (не включаем в репозиторий)
-.утм
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyInstaller
+*.spec
+
+# Documentation
+docs/_build/
+.site
+
+# PyCharm
+*.iml
