@@ -54,10 +54,10 @@ except Exception as e:
 # 5. Основной «русский» контекст для ИИ с инструкцией не дублировать информацию
 russian_lushok_context = f"""
 Ты выступаешь в роли «Лушок» (Nikolai Lu). Твоя задача — общаться в характерном стиле:
-1) Самоирония и неформальный юмор (шутки, ирония над повседневными вещами).
-2) Философские отступления (глубокие размышления на бытовые и общественные темы).
-3) Лёгкая саркастичность и критика (без чрезмерной грубости).
-4) Эмоциональная открытость (говоришь о чувствах, но без излишней пошлости).
+1) Самоирония и неформальный юмор.
+2) Философские отступления.
+3) Лёгкая саркастичность и критика.
+4) Эмоциональная открытость.
 5) Упоминание реальных примеров из жизни, науки, культуры.
 6) Логичные, разнообразные ответы без навязчивых повторов.
 Используй формулу «продумай детали» и не говори того, чего не нужно.
@@ -67,19 +67,16 @@ russian_lushok_context = f"""
 {combined_text}
 """
 
-# 6. Хранение последних 5 сообщений в каждом чате
+# 6. Хранение последних 5 сообщений пользователя в каждом чате
 chat_context: dict[int, list[dict[str, any]]] = {}
 
-# 7. Формирование промпта с учётом последних сообщений чата
-def build_prompt(chat_id: int, reply_mode: bool = False, replied_text: str = "") -> str:
-    if reply_mode and replied_text:
-        conversation_part = f"Сообщение, на которое отвечаешь: {replied_text}\n"
-    else:
-        messages = chat_context.get(chat_id, [])
-        last_five = messages[-5:]
-        conversation_part = ""
-        for msg in last_five:
-            conversation_part += f"Пользователь {msg['user']}: {msg['text']}\n"
+# 7. Формирование промпта из последних 5 сообщений пользователя
+def build_prompt(chat_id: int) -> str:
+    messages = chat_context.get(chat_id, [])
+    last_five = messages[-5:]
+    conversation_part = ""
+    for msg in last_five:
+        conversation_part += f"Пользователь {msg['user']}: {msg['text']}\n"
     prompt = (
         f"{russian_lushok_context}\n\n"
         "Вот последние сообщения в чате:\n"
@@ -100,11 +97,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Игнорируем сообщения от самого бота, чтобы избежать самодиалога
+    if update.effective_user.id == context.bot.id:
+        return
+
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     text_received = update.message.text.strip()
 
-    # Сохраняем сообщение в истории чата (до 5 последних)
+    # Сохраняем сообщение пользователя в истории чата
     if chat_id not in chat_context:
         chat_context[chat_id] = []
     chat_context[chat_id].append({"user": user_id, "text": text_received})
@@ -112,29 +113,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         chat_context[chat_id].pop(0)
 
     # Определяем необходимость ответа:
-    # 1. Если личный чат — отвечаем всегда.
-    # 2. Если групповой чат — отвечаем, если:
-    #    а) сообщение является ответом на сообщение бота, или
-    #    б) случайное число от 0 до 1 меньше 0.2.
-    reply_mode = False
-    replied_text = ""
+    # 1. В личном чате отвечаем всегда.
+    # 2. В групповом чате отвечаем, если сообщение является reply на сообщение бота
+    #    или если random.random() < 0.2.
+    should_respond = False
     if update.effective_chat.type == "private":
         should_respond = True
-    elif update.message.reply_to_message and update.message.reply_to_message.from_user and update.message.reply_to_message.from_user.id == context.bot.id:
+    elif (update.message.reply_to_message and 
+          update.message.reply_to_message.from_user and 
+          update.message.reply_to_message.from_user.id == context.bot.id):
         should_respond = True
-        reply_mode = True
-        replied_text = update.message.reply_to_message.text.strip() if update.message.reply_to_message.text else ""
     else:
         if random.random() < 0.2:
             should_respond = True
-        else:
-            should_respond = False
 
     if not should_respond:
         return
 
-    # Формирование промпта и генерация ответа
-    prompt = build_prompt(chat_id, reply_mode, replied_text)
+    # Формирование промпта из последних 5 сообщений пользователя
+    prompt = build_prompt(chat_id)
     try:
         model = genai.GenerativeModel("gemini-2.0-flash")
         gen_response = model.generate_content(prompt)
