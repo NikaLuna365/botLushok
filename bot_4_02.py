@@ -2,6 +2,7 @@ import os
 import sys
 import logging
 import random
+import re
 from dotenv import load_dotenv
 from charset_normalizer import from_path
 from telegram import Update, ReplyKeyboardMarkup
@@ -68,9 +69,16 @@ russian_lushok_context = f"""
 """
 
 # 6. Хранение истории чата (до последних 5 сообщений)
+# Каждая запись будет содержать: user, text, from_bot (True для сообщений бота)
 chat_context: dict[int, list[dict[str, any]]] = {}
 
-# 7. Формирование промпта с учётом контекста
+# 7. Функция для фильтрации технической информации (например, IP-адресов)
+def filter_technical_info(text: str) -> str:
+    ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
+    filtered_text = re.sub(ip_pattern, "[REDACTED]", text)
+    return filtered_text
+
+# 8. Формирование промпта с учётом контекста
 def build_prompt(chat_id: int, reply_mode: bool = False, replied_text: str = "") -> str:
     messages = chat_context.get(chat_id, [])
     conversation_part = ""
@@ -82,14 +90,16 @@ def build_prompt(chat_id: int, reply_mode: bool = False, replied_text: str = "")
         if context_messages:
             conversation_part += "Дополнительный контекст:\n"
             for msg in context_messages:
-                conversation_part += f"Пользователь {msg['user']}: {msg['text']}\n"
+                label = "[Бот]" if msg.get("from_bot", False) else f"[{msg['user']}]"
+                conversation_part += f"{label}: {msg['text']}\n"
     else:
         # Если не reply, то используем последние 5 сообщений как общий контекст
         context_messages = messages[-5:]
         if context_messages:
             conversation_part += "Контекст последних сообщений:\n"
             for msg in context_messages:
-                conversation_part += f"Пользователь {msg['user']}: {msg['text']}\n"
+                label = "[Бот]" if msg.get("from_bot", False) else f"[{msg['user']}]"
+                conversation_part += f"{label}: {msg['text']}\n"
 
     prompt = (
         f"{russian_lushok_context}\n\n"
@@ -98,7 +108,7 @@ def build_prompt(chat_id: int, reply_mode: bool = False, replied_text: str = "")
     )
     return prompt
 
-# 8. Обработчики команд и сообщений
+# 9. Обработчики команд и сообщений
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_keyboard = [
         ["Философия", "Политика"],
@@ -111,13 +121,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
+
+    # Извлечение информации о пользователе: используем username или first_name как fallback
+    if update.effective_user:
+        username = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
+    else:
+        username = "Неизвестный"
+    
     text_received = update.message.text.strip()
 
-    # Сохраняем текущее сообщение в истории (до последних 5 сообщений)
+    # Сохраняем текущее сообщение в истории (до последних 5 сообщений), с пометкой, что это сообщение от пользователя
     if chat_id not in chat_context:
         chat_context[chat_id] = []
-    chat_context[chat_id].append({"user": user_id, "text": text_received})
+    chat_context[chat_id].append({"user": username, "text": text_received, "from_bot": False})
     if len(chat_context[chat_id]) > 5:
         chat_context[chat_id].pop(0)
 
@@ -128,22 +144,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     #    б) Если нет reply – отвечаем с вероятностью 20%.
     reply_mode = False
     replied_text = ""
+    should_respond = False
     if update.effective_chat.type == "private":
         should_respond = True
     elif update.message.reply_to_message and update.message.reply_to_message.from_user and update.message.reply_to_message.from_user.id == context.bot.id:
         should_respond = True
         reply_mode = True
-        replied_text = update.message.reply_to_message.text.strip() if update.message.reply_to_message.text else ""
+        if update.message.reply_to_message.text:
+            replied_text = update.message.reply_to_message.text.strip()
     else:
         if random.random() < 0.2:
             should_respond = True
-        else:
-            should_respond = False
 
     if not should_respond:
         return
 
-    # Формирование промпта с учетом выбранного режима
+    # Формирование промпта с учётом выбранного режима
     prompt = build_prompt(chat_id, reply_mode, replied_text)
     try:
         model = genai.GenerativeModel("gemini-2.0-flash")
@@ -153,9 +169,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.error(f"Ошибка при генерации ответа: {e}", exc_info=True)
         response = "Произошла ошибка. Попробуйте ещё раз."
 
+    # Фильтрация технической информации (например, IP-адресов)
+    response = filter_technical_info(response)
+
+    # Сохраняем ответ бота в истории чата с пометкой, что это сообщение от бота
+    chat_context[chat_id].append({"user": "Бот", "text": response, "from_bot": True})
+    if len(chat_context[chat_id]) > 5:
+        chat_context[chat_id].pop(0)
+
     await update.message.reply_text(response)
 
-# 9. Запуск бота
+# 10. Запуск бота
 def main() -> None:
     try:
         application = Application.builder().token(telegram_token).build()
