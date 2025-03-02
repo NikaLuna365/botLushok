@@ -3,6 +3,7 @@ import sys
 import logging
 import random
 import re
+import asyncio
 from dotenv import load_dotenv
 from charset_normalizer import from_path
 from telegram import Update, ReplyKeyboardMarkup
@@ -187,7 +188,15 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
     wav_file_path = f"temp_{voice.file_id}.wav"
 
     await file.download_to_drive(custom_path=ogg_file_path)
-    transcription = audio_processor.process_audio(ogg_file_path, temp_wav_file=wav_file_path)
+    logger.info("Голосовое сообщение сохранено: %s", ogg_file_path)
+
+    # Выполняем синхронную операцию распознавания в отдельном потоке,
+    # чтобы не блокировать основной цикл событий
+    transcription = await asyncio.get_event_loop().run_in_executor(
+        None, audio_processor.process_audio, ogg_file_path, wav_file_path
+    )
+    logger.info("Завершена транскрипция для %s", ogg_file_path)
+
     try:
         os.remove(ogg_file_path)
     except Exception as e:
