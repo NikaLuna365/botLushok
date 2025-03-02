@@ -65,7 +65,6 @@ class AudioProcessor:
             logger.error("Ошибка открытия файла WAV: %s", e)
             return ""
         
-        # Проверяем, что аудио соответствует требуемым параметрам
         if wf.getnchannels() != 1 or wf.getframerate() != self.sample_rate:
             logger.warning("Файл WAV имеет неподходящие параметры. Ожидается моно с частотой %s Гц.", self.sample_rate)
 
@@ -79,7 +78,6 @@ class AudioProcessor:
             if rec.AcceptWaveform(data):
                 res = json.loads(rec.Result())
                 result_text += " " + res.get("text", "")
-        # Финальный результат
         res = json.loads(rec.FinalResult())
         result_text += " " + res.get("text", "")
         wf.close()
@@ -105,11 +103,8 @@ class AudioProcessor:
 
 # Пример использования:
 if __name__ == "__main__":
-    # Путь к модели Vosk (укажите правильный путь к вашей модели)
-    MODEL_PATH = "models/vosk_model"
-    
-    # Путь к входному файлу OGG (пример)
-    OGG_FILE = "sample.ogg"
+    MODEL_PATH = "models/vosk_model"  # Укажите правильный путь к модели Vosk
+    OGG_FILE = "sample.ogg"           # Пример входного файла OGG
     
     processor = AudioProcessor(model_path=MODEL_PATH)
     text = processor.process_audio(OGG_FILE)
