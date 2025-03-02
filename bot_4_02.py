@@ -3,7 +3,6 @@ import sys
 import logging
 import random
 import re
-from typing import Any
 from dotenv import load_dotenv
 from charset_normalizer import from_path
 from telegram import Update, ReplyKeyboardMarkup
@@ -71,7 +70,7 @@ russian_lushok_context = f"""
 
 # 6. Хранение истории чата (до последних 5 сообщений)
 # Каждая запись будет содержать: user, text, from_bot (True для сообщений бота)
-chat_context: dict[int, list[dict[str, Any]]] = {}
+chat_context: dict[int, list[dict[str, any]]] = {}
 
 # 7. Функция для фильтрации технической информации (например, IP-адресов)
 def filter_technical_info(text: str) -> str:
@@ -84,9 +83,7 @@ def build_prompt(chat_id: int, reply_mode: bool = False, replied_text: str = "")
     messages = chat_context.get(chat_id, [])
     conversation_part = ""
     if reply_mode and replied_text:
-        # Основной вопрос – сообщение, на которое отвечаем
         conversation_part += f"Сообщение, на которое отвечаешь: {replied_text}\n"
-        # Дополнительный контекст – последние 4 сообщения (если они есть)
         context_messages = messages[-4:]
         if context_messages:
             conversation_part += "Дополнительный контекст:\n"
@@ -94,7 +91,6 @@ def build_prompt(chat_id: int, reply_mode: bool = False, replied_text: str = "")
                 label = "[Бот]" if msg.get("from_bot", False) else f"[{msg['user']}]"
                 conversation_part += f"{label}: {msg['text']}\n"
     else:
-        # Если не reply, то используем последние 5 сообщений как общий контекст
         context_messages = messages[-5:]
         if context_messages:
             conversation_part += "Контекст последних сообщений:\n"
@@ -122,42 +118,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # 10. Обработчик текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Получаем ID чата
     chat_id = update.effective_chat.id
 
-    # Определяем имя пользователя
     if update.effective_user:
         username = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
     else:
         username = "Неизвестный"
     
-    # Текст сообщения
     text_received = update.message.text.strip()
 
-    # Инициализируем историю, если её ещё нет
     if chat_id not in chat_context:
         chat_context[chat_id] = []
-    # Добавляем сообщение пользователя в историю
     chat_context[chat_id].append({"user": username, "text": text_received, "from_bot": False})
-    # Ограничиваем историю до 5 последних записей
     if len(chat_context[chat_id]) > 5:
         chat_context[chat_id].pop(0)
 
-    # Логика решения, отвечать боту или нет
     reply_mode = False
     replied_text = ""
     should_respond = False
 
-    # 1) В приватном чате бот всегда отвечает
     if update.effective_chat.type == "private":
         should_respond = True
-    # 2) Если это reply на сообщение бота
     elif update.message.reply_to_message and update.message.reply_to_message.from_user and update.message.reply_to_message.from_user.id == context.bot.id:
         should_respond = True
         reply_mode = True
         if update.message.reply_to_message.text:
             replied_text = update.message.reply_to_message.text.strip()
-    # 3) В группах есть 20% вероятность ответа, если не reply
     else:
         if random.random() < 0.2:
             should_respond = True
@@ -165,7 +151,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not should_respond:
         return
 
-    # Формируем промпт
     prompt = build_prompt(chat_id, reply_mode, replied_text)
     try:
         model = genai.GenerativeModel("gemini-2.0-flash")
@@ -175,52 +160,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.error(f"Ошибка при генерации ответа: {e}", exc_info=True)
         response = "Произошла ошибка. Попробуйте ещё раз."
 
-    # Фильтрация технических данных (например, IP)
     response = filter_technical_info(response)
 
-    # Добавляем ответ бота в историю
     chat_context[chat_id].append({"user": "Бот", "text": response, "from_bot": True})
     if len(chat_context[chat_id]) > 5:
         chat_context[chat_id].pop(0)
-
-    # Отправляем ответ
+    
     await update.message.reply_text(response)
 
 # 11. Интеграция с audio_processor.py для обработки голосовых сообщений
 from audio_processor import AudioProcessor
 
-audio_processor = AudioProcessor(model_path="models/vosk_model")
+# Используем абсолютный путь внутри контейнера
+audio_processor = AudioProcessor(model_path="/app/models/vosk_model")
 
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
 
-    # Проверяем, что это действительно голосовое сообщение
     voice = update.message.voice
     if not voice:
         await update.message.reply_text("Ошибка: голосовое сообщение не найдено.")
         return
 
-    # Загружаем файл
     file = await context.bot.get_file(voice.file_id)
     ogg_file_path = f"temp_{voice.file_id}.ogg"
     wav_file_path = f"temp_{voice.file_id}.wav"
 
     await file.download_to_drive(custom_path=ogg_file_path)
-    # Распознаём
     transcription = audio_processor.process_audio(ogg_file_path, temp_wav_file=wav_file_path)
-    # Удаляем временный ogg
     try:
         os.remove(ogg_file_path)
     except Exception as e:
         logger.warning("Не удалось удалить временный файл '%s': %s", ogg_file_path, e)
 
-    # Если не удалось распознать
     if not transcription:
         response = "Не удалось распознать голос. Попробуйте записать сообщение ещё раз."
     else:
         response = f"Распознанный текст: {transcription}"
     
-    # Сохраняем в историю
     chat_context.setdefault(chat_id, []).append({"user": "Пользователь (voice)", "text": transcription, "from_bot": False})
     if len(chat_context[chat_id]) > 5:
         chat_context[chat_id].pop(0)
@@ -232,11 +209,8 @@ def main() -> None:
     try:
         application = Application.builder().token(telegram_token).build()
         application.add_handler(CommandHandler("start", start))
-        # Обработчик голосовых сообщений
         application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
-        # Обработчик текстовых сообщений
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
         logger.info("Бот запущен и готов к работе через polling.")
         application.run_polling()
     except Exception as e:
