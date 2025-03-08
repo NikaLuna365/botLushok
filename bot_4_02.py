@@ -8,6 +8,7 @@ import subprocess
 import wave
 import time
 import traceback
+import tempfile
 from dotenv import load_dotenv
 from charset_normalizer import from_path
 from telegram import Update, ReplyKeyboardMarkup
@@ -25,14 +26,85 @@ def get_vosk_model():
     """
     global _vosk_model
     if _vosk_model is None:
-        logging.info("Инициализация Vosk модели...")
+        logger.info("Инициализация Vosk модели...")
         try:
             _vosk_model = Model("/app/models/vosk_model")
-            logging.info("Vosk модель успешно загружена.")
+            logger.info("Vosk модель успешно загружена.")
         except Exception as e:
-            logging.error("Ошибка загрузки Vosk модели: %s", str(e), exc_info=True)
+            logger.error("Ошибка загрузки Vosk модели: %s", str(e), exc_info=True)
             _vosk_model = None
     return _vosk_model
+
+def process_voice_message(voice, file_unique_id: str, username: str) -> str:
+    """
+    Обработка голосового сообщения:
+      1. Скачивание файла.
+      2. Конвертация из OGG в WAV с помощью ffmpeg.
+      3. Распознавание голосового сообщения с помощью Vosk.
+      4. Удаление временных файлов.
+    Возвращает распознанный текст или сообщение об ошибке.
+    """
+    try:
+        start_time = time.time()
+        # Создаем временные файлы
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as ogg_file:
+            temp_ogg = ogg_file.name
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
+            temp_wav = wav_file.name
+
+        # Скачиваем голосовой файл
+        voice_file = yield from voice.get_file()  # асинхронное получение файла
+        yield from voice_file.download_to_drive(temp_ogg)
+        logger.info("Голосовой файл скачан: %s", temp_ogg)
+
+        # Конвертация OGG -> WAV
+        conv_start = time.time()
+        subprocess.run(["ffmpeg", "-y", "-i", temp_ogg, temp_wav],
+                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        conv_time = time.time() - conv_start
+        logger.info("Конвертация завершена за %.2f секунд. WAV файл: %s", conv_time, temp_wav)
+
+        # Распознавание через Vosk
+        model = get_vosk_model()
+        if model is None:
+            return "Ошибка: модель распознавания не загружена."
+
+        with wave.open(temp_wav, "rb") as wf:
+            sample_rate = wf.getframerate()
+            logger.info("Открыт WAV файл с частотой дискретизации: %d Гц", sample_rate)
+            rec = KaldiRecognizer(model, sample_rate)
+            result_text = ""
+            while True:
+                data = wf.readframes(4000)
+                if len(data) == 0:
+                    break
+                if rec.AcceptWaveform(data):
+                    res = json.loads(rec.Result())
+                    segment = res.get("text", "")
+                    logger.debug("Распознан сегмент: %s", segment)
+                    result_text += segment + " "
+            final_res = rec.FinalResult()
+            res_dict = json.loads(final_res)
+            final_segment = res_dict.get("text", "")
+            logger.info("Финальный сегмент распознавания: %s", final_segment)
+            result_text += final_segment
+            recognized_text = result_text.strip() if result_text.strip() else "Голос не распознан."
+            logger.info("Полный результат распознавания для %s: %s", username, recognized_text)
+    except Exception as e:
+        logger.error("Ошибка обработки голосового сообщения: %s", str(e), exc_info=True)
+        recognized_text = "Ошибка при распознавании голосового сообщения."
+    finally:
+        # Удаление временных файлов
+        for temp_file in (temp_ogg, temp_wav):
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+                    logger.debug("Удалён временный файл: %s", temp_file)
+            except Exception as del_e:
+                logger.warning("Ошибка удаления файла %s: %s", temp_file, str(del_e))
+        elapsed = time.time() - start_time
+        logger.info("Общая обработка голосового сообщения заняла %.2f секунд.", elapsed)
+    return recognized_text
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -49,11 +121,9 @@ if not os.path.exists("logs"):
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
 file_handler = logging.FileHandler('logs/bot.log', encoding='utf-8')
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
-
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
@@ -66,7 +136,7 @@ except Exception as e:
     logger.critical("Ошибка настройки Gemini API: %s", str(e), exc_info=True)
     sys.exit(1)
 
-# Чтение дополнительных материалов из data.txt (однократно при старте)
+# Чтение дополнительных материалов из data.txt
 file_path = "./data.txt"
 try:
     result = from_path(file_path).best()
@@ -111,7 +181,7 @@ def filter_technical_info(text: str) -> str:
 
 def build_prompt(chat_id: int, reply_mode: bool = False, replied_text: str = "") -> str:
     """
-    Формирование промпта с учетом контекста чата.
+    Формирование запроса с учетом контекста чата.
     """
     messages = chat_context.get(chat_id, [])
     conversation_part = ""
@@ -130,11 +200,7 @@ def build_prompt(chat_id: int, reply_mode: bool = False, replied_text: str = "")
             for msg in context_messages:
                 label = "[Бот]" if msg.get("from_bot", False) else f"[{msg['user']}]"
                 conversation_part += f"{label}: {msg['text']}\n"
-    prompt = (
-        f"{russian_lushok_context}\n\n"
-        f"{conversation_part}\n"
-        "Продолжай диалог в стиле Лушок, учитывая все условия."
-    )
+    prompt = f"{russian_lushok_context}\n\n{conversation_part}\nПродолжай диалог в стиле Лушок, учитывая все условия."
     return prompt
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -151,70 +217,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     text_received = ""
     try:
-        # Обработка текстового сообщения
         if update.message and update.message.text:
             text_received = update.message.text.strip()
             logger.info("Получено текстовое сообщение от %s: %s", username, text_received)
-        # Обработка голосового сообщения
         elif update.message and update.message.voice:
             logger.info("Получено голосовое сообщение от %s. Начало распознавания...", username)
-            start_time = time.time()
-            voice_file = await update.message.voice.get_file()
-            temp_ogg = f"/tmp/{update.message.voice.file_unique_id}.ogg"
-            temp_wav = f"/tmp/{update.message.voice.file_unique_id}.wav"
-            await voice_file.download_to_drive(temp_ogg)
-            logger.info("Голосовой файл скачан: %s", temp_ogg)
-            
-            # Конвертация OGG в WAV через ffmpeg
-            try:
-                conv_start = time.time()
-                subprocess.run(["ffmpeg", "-y", "-i", temp_ogg, temp_wav], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                conv_time = time.time() - conv_start
-                logger.info("Конвертация завершена за %.2f секунд. WAV файл: %s", conv_time, temp_wav)
-            except Exception as conv_e:
-                logger.error("Ошибка конвертации голосового файла: %s", str(conv_e), exc_info=True)
-                text_received = "Ошибка обработки голосового сообщения."
-            else:
-                # Распознавание через Vosk
-                model = get_vosk_model()
-                if model is None:
-                    text_received = "Ошибка: модель распознавания не загружена."
-                else:
-                    try:
-                        wf = wave.open(temp_wav, "rb")
-                        sample_rate = wf.getframerate()
-                        logger.info("Открыт WAV файл с частотой дискретизации: %d Гц", sample_rate)
-                        rec = KaldiRecognizer(model, sample_rate)
-                        result_text = ""
-                        frames_processed = 0
-                        while True:
-                            data = wf.readframes(4000)
-                            if len(data) == 0:
-                                break
-                            frames_processed += 1
-                            if rec.AcceptWaveform(data):
-                                res = json.loads(rec.Result())
-                                segment = res.get("text", "")
-                                logger.debug("Распознан сегмент: %s", segment)
-                                result_text += segment + " "
-                        # Финальное распознавание
-                        final_res = rec.FinalResult()
-                        res_dict = json.loads(final_res)
-                        final_segment = res_dict.get("text", "")
-                        logger.info("Финальный сегмент распознавания: %s", final_segment)
-                        result_text += final_segment
-                        text_received = result_text.strip() if result_text.strip() else "Голос не распознан."
-                        logger.info("Полный результат распознавания: %s", text_received)
-                    except Exception as rec_e:
-                        logger.error("Ошибка распознавания голосового сообщения: %s", str(rec_e), exc_info=True)
-                        text_received = "Ошибка при распознавании голосового сообщения."
-            # Удаление временных файлов
-            for f in (temp_ogg, temp_wav):
-                if os.path.exists(f):
-                    os.remove(f)
-                    logger.debug("Удалён временный файл: %s", f)
-            elapsed = time.time() - start_time
-            logger.info("Распознавание голосового сообщения заняло %.2f секунд.", elapsed)
+            text_received = await process_voice_message(update.message.voice, update.message.voice.file_unique_id, username)
         else:
             logger.warning("Получено сообщение без текста и голосового контента от %s.", username)
             return
@@ -229,7 +237,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if len(chat_context[chat_id]) > 5:
         chat_context[chat_id].pop(0)
 
-    # Определение необходимости ответа
     reply_mode = False
     replied_text = ""
     should_respond = False
