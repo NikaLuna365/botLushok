@@ -3,12 +3,16 @@ import sys
 import logging
 import random
 import re
+import json
+import subprocess
+import wave
 import traceback
 from dotenv import load_dotenv
 from charset_normalizer import from_path
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import google.generativeai as genai
+from vosk import Model, KaldiRecognizer
 
 # Глобальная переменная для кэширования Vosk модели
 _vosk_model = None
@@ -22,10 +26,7 @@ def get_vosk_model():
     if _vosk_model is None:
         logging.info("Инициализация Vosk модели...")
         try:
-            # Здесь можно вставить реальную загрузку модели, например:
-            # from vosk import Model
-            # _vosk_model = Model("/app/models/vosk_model")
-            _vosk_model = "Vosk Model Loaded"  # Заглушка для примера
+            _vosk_model = Model("/app/models/vosk_model")
             logging.info("Vosk модель успешно загружена.")
         except Exception as e:
             logging.error("Ошибка загрузки Vosk модели: " + str(e), exc_info=True)
@@ -135,7 +136,6 @@ def build_prompt(chat_id: int, reply_mode: bool = False, replied_text: str = "")
     )
     return prompt
 
-# Обработчик команды /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_keyboard = [["Философия", "Политика"], ["Критика общества", "Личные истории"]]
     await update.message.reply_text(
@@ -143,23 +143,76 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
 
-# Обработчик входящих сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     username = (update.effective_user.username if update.effective_user and update.effective_user.username 
                 else update.effective_user.first_name if update.effective_user else "Неизвестный")
-    text_received = update.message.text.strip()
 
+    # Обработка разных типов сообщений: текстовые и голосовые
+    try:
+        if update.message and update.message.text:
+            text_received = update.message.text.strip()
+        elif update.message and update.message.voice:
+            # Обработка голосового сообщения
+            logger.info("Получено голосовое сообщение. Начало распознавания...")
+            voice_file = await update.message.voice.get_file()
+            temp_ogg = f"/tmp/{update.message.voice.file_unique_id}.ogg"
+            temp_wav = f"/tmp/{update.message.voice.file_unique_id}.wav"
+            await voice_file.download_to_drive(temp_ogg)
+            
+            # Конвертация OGG в WAV через ffmpeg
+            try:
+                subprocess.run(["ffmpeg", "-y", "-i", temp_ogg, temp_wav], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except Exception as conv_e:
+                logger.error("Ошибка конвертации голосового файла: " + str(conv_e), exc_info=True)
+                text_received = "Ошибка обработки голосового сообщения."
+            else:
+                # Распознавание через Vosk
+                model = get_vosk_model()
+                if model is None:
+                    text_received = "Ошибка: модель распознавания не загружена."
+                else:
+                    try:
+                        wf = wave.open(temp_wav, "rb")
+                        rec = KaldiRecognizer(model, wf.getframerate())
+                        result_text = ""
+                        while True:
+                            data = wf.readframes(4000)
+                            if len(data) == 0:
+                                break
+                            if rec.AcceptWaveform(data):
+                                res = json.loads(rec.Result())
+                                result_text += res.get("text", "") + " "
+                        # Обработка финального результата
+                        final_res = rec.FinalResult()
+                        res_dict = json.loads(final_res)
+                        result_text += res_dict.get("text", "")
+                        text_received = result_text.strip() if result_text.strip() else "Голос не распознан."
+                    except Exception as rec_e:
+                        logger.error("Ошибка распознавания голосового сообщения: " + str(rec_e), exc_info=True)
+                        text_received = "Ошибка при распознавании голосового сообщения."
+            # Очистка временных файлов
+            for f in (temp_ogg, temp_wav):
+                if os.path.exists(f):
+                    os.remove(f)
+        else:
+            # Если нет ни текста, ни голосового сообщения – ничего не делаем
+            return
+    except Exception as e:
+        logger.error("Ошибка при извлечении содержимого сообщения: " + str(e), exc_info=True)
+        return
+
+    # Сохранение сообщения в историю
     if chat_id not in chat_context:
         chat_context[chat_id] = []
     chat_context[chat_id].append({"user": username, "text": text_received, "from_bot": False})
     if len(chat_context[chat_id]) > 5:
         chat_context[chat_id].pop(0)
 
+    # Определение необходимости ответа
     reply_mode = False
     replied_text = ""
     should_respond = False
-
     if update.effective_chat.type == "private":
         should_respond = True
     elif update.message.reply_to_message and update.message.reply_to_message.from_user and \
@@ -176,18 +229,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     prompt = build_prompt(chat_id, reply_mode, replied_text)
-
     try:
-        # Гарантируем, что Vosk модель загружена один раз (если понадобится в дальнейшем)
-        _ = get_vosk_model()
-        # Генерация ответа с помощью Gemini API
+        # Генерация ответа через Gemini API
         gemini_model = genai.GenerativeModel("gemini-2.0-flash")
         gen_response = gemini_model.generate_content(prompt)
         response = gen_response.text.strip() if gen_response and gen_response.text else "Извините, у меня нет ответа."
     except Exception as e:
         logger.error("Ошибка при генерации ответа: " + str(e), exc_info=True)
         response = "Произошла ошибка. Попробуйте ещё раз."
-    
+
     response = filter_technical_info(response)
     chat_context[chat_id].append({"user": "Бот", "text": response, "from_bot": True})
     if len(chat_context[chat_id]) > 5:
@@ -199,7 +249,7 @@ def main() -> None:
     try:
         application = Application.builder().token(telegram_token).build()
         application.add_handler(CommandHandler("start", start))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        application.add_handler(MessageHandler(filters.ALL, handle_message))
         logger.info("Бот запущен и готов к работе через polling.")
         application.run_polling()
     except Exception as e:
