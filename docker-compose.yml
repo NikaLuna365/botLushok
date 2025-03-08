@@ -8,18 +8,14 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - API_KEY=${API_KEY}
     restart: always
-    # Ограничение по памяти: контейнеру доступно не более 700 МБ
     mem_limit: 700m
-    # При необходимости можно ограничить количество CPU (например, 0.5)
-    # cpus: "0.5"
-    # Опционально: монтирование каталога для логов, чтобы логи сохранялись вне контейнера
     volumes:
       - ./logs:/app/logs
 
+  # Если сервис telegram-bot не используется, его можно удалить или закомментировать.
   telegram-bot:
     image: san_bot_tg-telegram-bot
     container_name: telegram-bot
     command: "python bot.py"
     restart: always
-    # Дополнительные ограничения для telegram-bot (если требуется)
     mem_limit: 200m
