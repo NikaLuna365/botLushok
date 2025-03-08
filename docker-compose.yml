@@ -12,7 +12,6 @@ services:
     volumes:
       - ./logs:/app/logs
 
-  # Если сервис telegram-bot не используется, его можно удалить или закомментировать.
   telegram-bot:
     image: san_bot_tg-telegram-bot
     container_name: telegram-bot
