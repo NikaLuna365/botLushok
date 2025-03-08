@@ -4,107 +4,12 @@ import logging
 import random
 import re
 import json
-import subprocess
-import wave
-import time
 import traceback
-import tempfile
 from dotenv import load_dotenv
 from charset_normalizer import from_path
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import google.generativeai as genai
-from vosk import Model, KaldiRecognizer
-
-# Глобальная переменная для кэширования Vosk модели
-_vosk_model = None
-
-def get_vosk_model():
-    """
-    Отложенная загрузка Vosk модели.
-    Если модель уже загружена, возвращает её, иначе загружает и кэширует.
-    """
-    global _vosk_model
-    if _vosk_model is None:
-        logger.info("Инициализация Vosk модели...")
-        try:
-            _vosk_model = Model("/app/models/vosk_model")
-            logger.info("Vosk модель успешно загружена.")
-        except Exception as e:
-            logger.error("Ошибка загрузки Vosk модели: %s", str(e), exc_info=True)
-            _vosk_model = None
-    return _vosk_model
-
-async def process_voice_message(voice, file_unique_id: str, username: str) -> str:
-    """
-    Обработка голосового сообщения:
-      1. Асинхронное скачивание файла.
-      2. Конвертация OGG -> WAV с помощью ffmpeg.
-      3. Распознавание голосового сообщения через Vosk.
-      4. Очистка временных файлов.
-    Возвращает распознанный текст или сообщение об ошибке.
-    """
-    try:
-        start_time = time.time()
-        # Создаем временные файлы
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as ogg_file:
-            temp_ogg = ogg_file.name
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
-            temp_wav = wav_file.name
-
-        # Асинхронное получение и скачивание голосового файла
-        voice_file = await voice.get_file()
-        await voice_file.download_to_drive(temp_ogg)
-        logger.info("Голосовой файл скачан: %s", temp_ogg)
-
-        # Конвертация OGG -> WAV через ffmpeg
-        conv_start = time.time()
-        subprocess.run(["ffmpeg", "-y", "-i", temp_ogg, temp_wav],
-                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        conv_time = time.time() - conv_start
-        logger.info("Конвертация завершена за %.2f секунд. WAV файл: %s", conv_time, temp_wav)
-
-        # Распознавание через Vosk
-        model = get_vosk_model()
-        if model is None:
-            return "Ошибка: модель распознавания не загружена."
-
-        with wave.open(temp_wav, "rb") as wf:
-            sample_rate = wf.getframerate()
-            logger.info("Открыт WAV файл с частотой дискретизации: %d Гц", sample_rate)
-            rec = KaldiRecognizer(model, sample_rate)
-            result_text = ""
-            while True:
-                data = wf.readframes(4000)
-                if len(data) == 0:
-                    break
-                if rec.AcceptWaveform(data):
-                    res = json.loads(rec.Result())
-                    segment = res.get("text", "")
-                    logger.debug("Распознан сегмент: %s", segment)
-                    result_text += segment + " "
-            final_res = rec.FinalResult()
-            res_dict = json.loads(final_res)
-            final_segment = res_dict.get("text", "")
-            logger.info("Финальный сегмент распознавания: %s", final_segment)
-            result_text += final_segment
-            recognized_text = result_text.strip() if result_text.strip() else "Голос не распознан."
-            logger.info("Полный результат распознавания для %s: %s", username, recognized_text)
-    except Exception as e:
-        logger.error("Ошибка обработки голосового сообщения: %s", str(e), exc_info=True)
-        recognized_text = "Ошибка при распознавании голосового сообщения."
-    finally:
-        # Удаление временных файлов
-        for temp_file in (temp_ogg, temp_wav):
-            try:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-                    logger.debug("Удалён временный файл: %s", temp_file)
-            except Exception as del_e:
-                logger.warning("Ошибка удаления файла %s: %s", temp_file, str(del_e))
-        elapsed = time.time() - start_time
-        logger.info("Общая обработка голосового сообщения заняла %.2f секунд.", elapsed)
-    return recognized_text
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -220,11 +125,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if update.message and update.message.text:
             text_received = update.message.text.strip()
             logger.info("Получено текстовое сообщение от %s: %s", username, text_received)
-        elif update.message and update.message.voice:
-            logger.info("Получено голосовое сообщение от %s. Начало распознавания...", username)
-            text_received = await process_voice_message(update.message.voice, update.message.voice.file_unique_id, username)
         else:
-            logger.warning("Получено сообщение без текста и голосового контента от %s.", username)
+            logger.warning("Получено сообщение без текстового содержимого от %s.", username)
             return
     except Exception as e:
         logger.error("Ошибка при извлечении содержимого сообщения: %s", str(e), exc_info=True)
