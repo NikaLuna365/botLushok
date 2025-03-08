@@ -35,13 +35,13 @@ def get_vosk_model():
             _vosk_model = None
     return _vosk_model
 
-def process_voice_message(voice, file_unique_id: str, username: str) -> str:
+async def process_voice_message(voice, file_unique_id: str, username: str) -> str:
     """
     Обработка голосового сообщения:
-      1. Скачивание файла.
-      2. Конвертация из OGG в WAV с помощью ffmpeg.
-      3. Распознавание голосового сообщения с помощью Vosk.
-      4. Удаление временных файлов.
+      1. Асинхронное скачивание файла.
+      2. Конвертация OGG -> WAV с помощью ffmpeg.
+      3. Распознавание голосового сообщения через Vosk.
+      4. Очистка временных файлов.
     Возвращает распознанный текст или сообщение об ошибке.
     """
     try:
@@ -52,12 +52,12 @@ def process_voice_message(voice, file_unique_id: str, username: str) -> str:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_file:
             temp_wav = wav_file.name
 
-        # Скачиваем голосовой файл
-        voice_file = yield from voice.get_file()  # асинхронное получение файла
-        yield from voice_file.download_to_drive(temp_ogg)
+        # Асинхронное получение и скачивание голосового файла
+        voice_file = await voice.get_file()
+        await voice_file.download_to_drive(temp_ogg)
         logger.info("Голосовой файл скачан: %s", temp_ogg)
 
-        # Конвертация OGG -> WAV
+        # Конвертация OGG -> WAV через ffmpeg
         conv_start = time.time()
         subprocess.run(["ffmpeg", "-y", "-i", temp_ogg, temp_wav],
                        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -136,7 +136,7 @@ except Exception as e:
     logger.critical("Ошибка настройки Gemini API: %s", str(e), exc_info=True)
     sys.exit(1)
 
-# Чтение дополнительных материалов из data.txt
+# Чтение дополнительных материалов из data.txt (однократно при старте)
 file_path = "./data.txt"
 try:
     result = from_path(file_path).best()
@@ -212,7 +212,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
-    username = (update.effective_user.username if update.effective_user and update.effective_user.username 
+    username = (update.effective_user.username if update.effective_user and update.effective_user.username
                 else update.effective_user.first_name if update.effective_user else "Неизвестный")
     
     text_received = ""
@@ -230,7 +230,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.error("Ошибка при извлечении содержимого сообщения: %s", str(e), exc_info=True)
         return
 
-    # Сохранение сообщения в историю
     if chat_id not in chat_context:
         chat_context[chat_id] = []
     chat_context[chat_id].append({"user": username, "text": text_received, "from_bot": False})
