@@ -1,18 +1,14 @@
 # Используем базовый образ Python 3.11 (slim версия)
 FROM python:3.11-slim
 
-# Устанавливаем системные зависимости (в этой версии голосовая обработка не используется, поэтому ffmpeg не требуется)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
-
-# Устанавливаем рабочую директорию
+# Рабочая директория
 WORKDIR /app
 
-# Копируем файл зависимостей и устанавливаем их
+# Копируем файл зависимостей и устанавливаем Python-пакеты
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
-# Копируем весь код проекта (без файла audio_processor.py, который удаляется)
+# Копируем весь код проекта (убедитесь, что файл audio_processor.py удалён)
 COPY . .
 
 # Команда для запуска бота
