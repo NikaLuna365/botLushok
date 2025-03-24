@@ -41,7 +41,7 @@ except Exception as e:
     logger.critical("Ошибка настройки Gemini API: %s", str(e), exc_info=True)
     sys.exit(1)
 
-# Чтение дополнительных материалов из data.txt (однократно при старте)
+# Чтение дополнительных материалов из data.txt (содержащего посты канала)
 file_path = "./data.txt"
 try:
     result = from_path(file_path).best()
@@ -80,19 +80,19 @@ chat_context: dict[int, list[dict[str, any]]] = {}
 
 def filter_technical_info(text: str) -> str:
     """
-    Фильтрация технической информации, например, IP-адресов.
+    Фильтрация технической информации (например, IP-адресов).
     """
     ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
     return re.sub(ip_pattern, "[REDACTED]", text)
 
 def build_prompt(chat_id: int, reply_mode: bool = False, replied_text: str = "") -> str:
     """
-    Формирование запроса с учетом контекста чата.
+    Формирование запроса с учетом контекста чата и включением информации из постов канала.
     """
     messages = chat_context.get(chat_id, [])
     conversation_part = ""
     if reply_mode and replied_text:
-        conversation_part += f"Сообщение, на которое отвечаешь: {replied_text}\n"
+        conversation_part += f"Сообщение, на которое отвечаем: {replied_text}\n"
         context_messages = messages[-4:]
         if context_messages:
             conversation_part += "Дополнительный контекст:\n"
@@ -106,13 +106,16 @@ def build_prompt(chat_id: int, reply_mode: bool = False, replied_text: str = "")
             for msg in context_messages:
                 label = "[Бот]" if msg.get("from_bot", False) else f"[{msg['user']}]"
                 conversation_part += f"{label}: {msg['text']}\n"
+    # Добавляем информацию из постов канала
+    if combined_text:
+        conversation_part += "\nПосты канала:\n" + combined_text + "\n"
     prompt = f"{russian_lushok_context}\n\n{conversation_part}\nПродолжай диалог в стиле Лушок, учитывая все условия."
     return prompt
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_keyboard = [["Философия", "Политика"], ["Критика общества", "Личные истории"]]
     await update.message.reply_text(
-        "Привет! Я AI LU. Я ИИ-копия Николая Лу, очень стараюсь быть похожим на него и иногда, случайно, бываю лучше. Если он нас покинет, останется общаться со мнной. Можешь выбрать тему или просто начать общаться в любом контексте.",
+        "Привет! Я AI LU – цифровая копия Николая Лу. Можешь выбрать тему или начать общаться в любом контексте.",
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
 
@@ -127,37 +130,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             text_received = update.message.text.strip()
             logger.info("Получено текстовое сообщение от %s: %s", username, text_received)
         else:
-            logger.warning("Получено сообщение без текстового содержимого от %s.", username)
+            logger.warning("Сообщение без текста от %s.", username)
             return
     except Exception as e:
-        logger.error("Ошибка при извлечении содержимого сообщения: %s", str(e), exc_info=True)
+        logger.error("Ошибка извлечения текста: %s", str(e), exc_info=True)
         return
 
-    if chat_id not in chat_context:
-        chat_context[chat_id] = []
-    chat_context[chat_id].append({"user": username, "text": text_received, "from_bot": False})
-    if len(chat_context[chat_id]) > 5:
-        chat_context[chat_id].pop(0)
+    # Если сообщение содержит менее трёх слов, не учитываем его
+    if len(text_received.split()) < 3:
+        logger.info("Сообщение от %s проигнорировано (меньше 3 слов).", username)
+        return
 
+    # Определяем, является ли сообщение ответом (reply)
     reply_mode = False
     replied_text = ""
     should_respond = False
     if update.effective_chat.type == "private":
         should_respond = True
-    elif update.message.reply_to_message and update.message.reply_to_message.from_user and \
-         update.message.reply_to_message.from_user.id == context.bot.id:
-        should_respond = True
-        reply_mode = True
-        if update.message.reply_to_message.text:
-            replied_text = update.message.reply_to_message.text.strip()
+    elif update.message.reply_to_message:
+        replied_msg = update.message.reply_to_message
+        # Если ответ на сообщение бота или другого пользователя – обрабатываем как reply
+        if replied_msg.from_user:
+            reply_mode = True
+            if replied_msg.text:
+                replied_text = replied_msg.text.strip()
+            should_respond = True
     else:
-        if random.random() < 0.2:
+        # Случайное срабатывание: вероятность 0.1
+        if random.random() < 0.1:
             should_respond = True
 
     if not should_respond:
         logger.info("Решено не отвечать на сообщение от %s.", username)
         return
 
+    # Добавляем сообщение в историю контекста
+    if chat_id not in chat_context:
+        chat_context[chat_id] = []
+    chat_context[chat_id].append({"user": username, "text": text_received, "from_bot": False})
+    if len(chat_context[chat_id]) > 5:
+        chat_context[chat_id].pop(0)
+
+    # Формируем запрос с учетом контекста, постов канала и информации о том, на какое сообщение ответили
     prompt = build_prompt(chat_id, reply_mode, replied_text)
     try:
         logger.info("Формируется запрос к Gemini API. Размер запроса: %d символов.", len(prompt))
@@ -170,6 +184,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         response = "Произошла ошибка. Попробуйте ещё раз."
 
     response = filter_technical_info(response)
+    # Добавляем ответ бота в историю контекста
     chat_context[chat_id].append({"user": "Бот", "text": response, "from_bot": True})
     if len(chat_context[chat_id]) > 5:
         chat_context[chat_id].pop(0)
