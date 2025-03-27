@@ -19,38 +19,27 @@ try:
 except ImportError as e:
     print(f"КРИТИЧЕСКАЯ ОШИБКА: Библиотека python-telegram-bot не найдена или недоступна: {e}")
     print("Проверьте requirements.txt и процесс сборки Docker.")
-    sys.exit(1) # Выходим, если telegram не импортируется
+    sys.exit(1)
 
 # --- Зависимости Google Generative AI ---
 try:
     import google.generativeai as genai
-    # 'types' доступен через сам модуль genai, НЕ импортируем Part/Blob напрямую
-    # Убрана строка: from google.generativeai.types import Part, Blob
-    # Проверяем доступность types на всякий случай
-    if not hasattr(genai, 'types'):
-         raise ImportError("Модуль 'types' не найден внутри 'google.generativeai'. Возможно, версия слишком старая или неполная установка.")
-    print("--- Импорт google.generativeai УСПЕШЕН ---")
+    # !!! УБРАН ИМПОРТ 'types' И ЕГО ПРОВЕРКА, ТАК КАК ОН БОЛЬШЕ НЕ НУЖЕН ДЛЯ СОЗДАНИЯ МЕДИА-ЧАСТИ !!!
+    # print("--- Импорт google.generativeai УСПЕШЕН ---") # Можно оставить для отладки, если хотите
 except ImportError as e:
-     print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось импортировать google.generativeai или его компоненты: {e}")
+     print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось импортировать google.generativeai: {e}")
      print("Проверьте requirements.txt (google-generativeai>=0.8.4) и процесс сборки Docker.")
      sys.exit(1)
 
 # --- Загрузка Переменных Окружения ---
-load_dotenv() # По умолчанию ищет файл .env
-# Если используете env.txt: load_dotenv(dotenv_path='env.txt')
-
+load_dotenv()
 api_key = os.getenv("API_KEY")
 telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Проверка наличия ключей
-if not api_key:
-    print("ОШИБКА: API_KEY не найден в переменных окружения. Невозможно настроить Gemini API.")
-if not telegram_token:
-    print("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN не найден. Бот не может запуститься.")
-    sys.exit(1)
+if not api_key: print("ОШИБКА: API_KEY не найден в переменных окружения.")
+if not telegram_token: print("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN не найден."); sys.exit(1)
 
 # --- Настройка Логирования ---
-# (Логика настройки логирования как в предыдущей версии)
 if not os.path.exists("logs"):
     try: os.makedirs("logs")
     except OSError as e: print(f"Не удалось создать директорию logs: {e}")
@@ -59,22 +48,19 @@ logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 if os.path.exists("logs"):
     try:
-        file_handler = logging.FileHandler('logs/bot.log', encoding='utf-8')
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    except Exception as e: print(f"Не удалось настроить запись логов в файл logs/bot.log: {e}")
+        file_handler = logging.FileHandler('logs/bot.log', encoding='utf-8'); file_handler.setFormatter(formatter); logger.addHandler(file_handler)
+    except Exception as e: print(f"Не удалось настроить запись логов в файл: {e}")
 console_handler = logging.StreamHandler(); console_handler.setFormatter(formatter); logger.addHandler(console_handler)
 
 # --- Инициализация Gemini API ---
 try:
+    if not api_key: raise ValueError("API_KEY не найден.")
     genai.configure(api_key=api_key)
     logger.info("Конфигурация Gemini API прошла успешно.")
-except Exception as e:
-    logger.critical(f"Неожиданная ошибка настройки Gemini API: {e}", exc_info=True)
-    sys.exit(1) # Критично, если настройка не удалась
+except ValueError as ve: logger.critical(f"Ошибка настройки Gemini API: {ve}"); sys.exit(1)
+except Exception as e: logger.critical(f"Неожиданная ошибка настройки Gemini API: {e}", exc_info=True); sys.exit(1)
 
 # --- Чтение data.txt ---
-# (Логика чтения data.txt как в предыдущей версии)
 file_path = "./data.txt"; combined_text = ""
 try:
     result = from_path(file_path).best(); combined_text = str(result) if result else ""
@@ -154,7 +140,7 @@ def build_prompt(chat_id: int, target_message: Message, response_trigger_type: s
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_keyboard = [["Философия", "Политика"], ["Критика общества", "Личные истории"]]
     await update.message.reply_text(
-        "Привет! Я AI LU – цифровая копия Николая Лу. Могу обсудить посты канала, сообщения (текст, голос, кружочки) или поболтать. Выбери тему или просто напиши что-нибудь.",
+        "Привет! Я AI LU – цифровая копия Николая Лу...", # Ваш текст
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
 
@@ -170,6 +156,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     media_type: str | None = None; media_object: Voice | VideoNote | None = None
     mime_type: str | None = None; media_placeholder_text: str = ""; media_data_bytes: bytes | None = None
 
+    # (Логика определения media_type, media_object, mime_type как раньше)
     if message.voice:
         media_type = "audio"; media_object = message.voice; mime_type = "audio/ogg"
         media_placeholder_text = "[Голосовое сообщение]"; logger.info("Обнаружено голосовое сообщение (ID: %s).", media_object.file_id)
@@ -186,17 +173,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     log_text = text_received if text_received else media_placeholder_text if media_placeholder_text else "[Пустое сообщение?]"
     logger.info("Обработка сообщения ID %d от %s в чате %d: %s", message_id, username, chat_id, log_text)
 
+    # (Добавление в контекст как раньше)
     if chat_id not in chat_context: chat_context[chat_id] = []
-    chat_context[chat_id].append({
-        "user": username, "text": text_received if media_type == "text" else media_placeholder_text,
-        "from_bot": False, "message_id": message_id
-    })
+    chat_context[chat_id].append({"user": username, "text": text_received if media_type == "text" else media_placeholder_text, "from_bot": False, "message_id": message_id})
     if len(chat_context[chat_id]) > MAX_CONTEXT_MESSAGES: chat_context[chat_id].pop(0)
 
+    # (Логика should_respond как раньше)
     should_respond = False; target_message = message; response_trigger_type = None
     is_channel_post = message.forward_from_chat and message.forward_from_chat.type == ChatType.CHANNEL
     is_reply_to_bot = message.reply_to_message and message.reply_to_message.from_user and message.reply_to_message.from_user.id == context.bot.id
-
     if update.effective_chat.type == ChatType.PRIVATE: should_respond = True; response_trigger_type = "dm"; logger.info("Триггер: Личное сообщение (DM).")
     elif is_reply_to_bot: should_respond = True; response_trigger_type = "reply_to_bot"; logger.info("Триггер: Ответ пользователем на сообщение бота.")
     elif is_channel_post: should_respond = True; response_trigger_type = "channel_post"; logger.info("Триггер: Обнаружен пост из канала.")
@@ -207,7 +192,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if not should_respond: logger.info("Окончательное решение: Не отвечать на сообщение ID %d.", message_id); return
 
-    # Скачивание Медиа
+    # (Скачивание Медиа как раньше)
     if media_object and mime_type:
         logger.info("Подготовка к обработке медиафайла (ID: %s)...", media_object.file_id)
         try:
@@ -228,26 +213,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if media_data_bytes and mime_type:
         try:
-            # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Используем genai.types.Part и genai.types.Blob ---
-            media_part = genai.types.Part(inline_data=genai.types.Blob(mime_type=mime_type, data=media_data_bytes))
-            content_parts.append(media_part); logger.debug("Медиа Part успешно создан и добавлен.")
-        except AttributeError as attr_err:
-            # Эта ошибка может возникнуть, если types.Part/Blob все еще недоступны (очень странно для 0.8.4)
-             logger.error("Ошибка доступа к Part/Blob через genai.types: %s. Проверьте версию google-generativeai!", attr_err, exc_info=True)
-             try: await context.bot.send_message(chat_id, "Ошибка подготовки медиа (проблема с библиотекой ИИ). Сообщите разработчику.", reply_to_message_id=message_id)
-             except Exception as send_err: logger.error("Не удалось отправить сообщение об ошибке подготовки медиа: %s", send_err)
-             # Продолжаем без медиа или прерываем? Давайте прервем, т.к. это ошибка конфигурации.
-             return
+            # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Создаем СЛОВАРЬ вместо объекта Part ---
+            media_part = {
+                "mime_type": mime_type,
+                "data": media_data_bytes
+            }
+            content_parts.append(media_part)
+            logger.debug("Медиа-часть (словарь) успешно создана и добавлена в контент запроса.")
         except Exception as part_err:
-             logger.error("Неожиданная ошибка создания медиа Part: %s", part_err, exc_info=True)
-             try: await context.bot.send_message(chat_id, "Не смог подготовить медиа для анализа. Отвечу только на текст.", reply_to_message_id=message_id)
+             # Эта ошибка теперь маловероятна, т.к. мы просто создаем словарь
+             logger.error("Ошибка при создании словаря для медиа-части: %s", part_err, exc_info=True)
+             try: await context.bot.send_message(chat_id, "Не смог подготовить медиа для анализа (ошибка словаря).", reply_to_message_id=message_id)
              except Exception as send_err: logger.error("Не удалось отправить сообщение об ошибке подготовки медиа: %s", send_err)
-             # Не прерываем, просто не будет медиа в запросе
+             # Не прерываем, запрос уйдет без медиа
 
     response = "Произошла непредвиденная ошибка при генерации ответа."
     try:
         logger.debug("Отправка запроса к Gemini API (количество частей: %d)...", len(content_parts))
-        gemini_model = genai.GenerativeModel("gemini-1.5-flash-latest")
+        gemini_model = genai.GenerativeModel("gemini-1.5-flash-latest") # Используйте актуальную модель
         safety_settings=[ # Ваши настройки безопасности
              {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
              {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
@@ -255,30 +238,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
              {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
         ]
         gen_response = await gemini_model.generate_content_async(
-             content_parts, safety_settings=safety_settings,
+             content_parts, # Передаем список [строка, словарь_медиа]
+             safety_settings=safety_settings,
              generation_config={"temperature": 0.7}
         )
 
+        # (Извлечение текста ответа как раньше)
         response_text = ""
-        try: # Безопасное извлечение текста ответа
-            # Код извлечения текста остается как был в предыдущей версии
-            # Он должен работать с ответами версии 0.8.x
-            if hasattr(gen_response, 'parts') and gen_response.parts:
-                 response_text = "".join(part.text for part in gen_response.parts if hasattr(part, 'text'))
-            elif hasattr(gen_response, 'text'):
-                 response_text = gen_response.text
-            elif gen_response.prompt_feedback and gen_response.prompt_feedback.block_reason:
-                 logger.warning("Ответ заблокирован по причине: %s", gen_response.prompt_feedback.block_reason)
-                 response_text = "Мой ответ был заблокирован фильтрами контента."
-            else:
-                 logger.warning("Gemini API вернул пустой ответ без текста и без явной причины блокировки.")
-                 response_text = "Хм, не могу ничего сказать по этому поводу."
-        except AttributeError as attr_err:
-             logger.error("Ошибка при извлечении текста из ответа Gemini: %s", attr_err, exc_info=True)
-             response_text = "Не смог разобрать ответ от ИИ."
-        except Exception as parse_err:
-            logger.error("Неожиданная ошибка при извлечении текста из ответа Gemini: %s", parse_err, exc_info=True)
-            response_text = "Произошла странная ошибка при получении ответа от ИИ."
+        try:
+            if hasattr(gen_response, 'parts') and gen_response.parts: response_text = "".join(part.text for part in gen_response.parts if hasattr(part, 'text'))
+            elif hasattr(gen_response, 'text'): response_text = gen_response.text
+            elif gen_response.prompt_feedback and gen_response.prompt_feedback.block_reason: logger.warning("Ответ заблокирован: %s", gen_response.prompt_feedback.block_reason); response_text = "Мой ответ был заблокирован фильтрами контента."
+            else: logger.warning("Gemini API вернул пустой ответ."); response_text = "Хм, не могу ничего сказать."
+        except AttributeError as attr_err: logger.error("Ошибка извлечения текста: %s", attr_err, exc_info=True); response_text = "Не смог разобрать ответ ИИ."
+        except Exception as parse_err: logger.error("Неожиданная ошибка извлечения: %s", parse_err, exc_info=True); response_text = "Странная ошибка получения ответа ИИ."
 
         response = response_text
         logger.info("Ответ от Gemini API успешно получен для сообщения ID %d.", target_message.message_id)
@@ -292,8 +265,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif "block" in str(e).lower(): response = "Ответ заблокирован."
         else: response = "Ой, что-то пошло не так при обращении к ИИ."
 
-    # Отправка Ответа
-    # (Логика отправки без изменений)
+    # (Отправка Ответа как раньше)
     response = filter_technical_info(response.strip())
     if not response: logger.warning("Сгенерированный ответ пуст."); response = "..."
     try:
@@ -329,5 +301,5 @@ def main() -> None:
         sys.exit(1)
 
 if __name__ == "__main__":
-    print(f"--- Запуск main() из {__file__} ---")
+    # print(f"--- Запуск main() из {__file__} ---") # Можно раскомментировать для отладки
     main()
