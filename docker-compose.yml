@@ -3,17 +3,16 @@
 services:
   bot:
     build: .
-    container_name: botlushok # Имя контейнера
+    container_name: botlushok
     env_file:
-      - .env # Подключаем файл с переменными окружения
+      - .env
     environment:
-      # Передаем переменные внутрь контейнера (хотя env_file уже это делает, но так надежнее для некоторых систем)
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - API_KEY=${API_KEY}
-    restart: always # Всегда перезапускать контейнер при падении или перезагрузке хоста
-    mem_limit: 700m # Лимит памяти (мониторьте реальное потребление и корректируйте при необходимости)
+    restart: always
+    mem_limit: 700m
     volumes:
-      - ./logs:/app/logs # Пробрасываем папку логов для сохранения между перезапусками
-      - ./chat_history.db:/app/chat_history.db # Пробрасываем файл БД SQLite для сохранения контекста
+      - ./logs:/app/logs           # Оставляем для логов
+      - ./data:/app/data          # ИЗМЕНЕНО: Монтируем директорию ./data с хоста в /app/data контейнера
 
 # --- END OF FILE docker-compose.txt ---
