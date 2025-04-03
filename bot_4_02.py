@@ -10,14 +10,19 @@ import io # Для работы с байтами в памяти
 import asyncio # Для асинхронных операций
 import aiosqlite # Для асинхронной работы с SQLite
 from datetime import datetime # Для временных меток в БД
+from typing import List, Tuple, Optional, Dict, Any # Для type hints
 
 from dotenv import load_dotenv
 
 # --- Зависимости Telegram ---
 try:
     from telegram import Update, ReplyKeyboardMarkup, Message, Voice, VideoNote, PhotoSize
-    from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-    from telegram.constants import ChatType
+    # Используем ApplicationBuilder для настройки приложения
+    from telegram.ext import (
+        Application, CommandHandler, MessageHandler, filters, ContextTypes, ApplicationBuilder,
+        CallbackQueryHandler, Defaults # Defaults можно использовать для общих настроек
+    )
+    from telegram.constants import ChatType, ParseMode
 except ImportError as e:
     print(f"КРИТИЧЕСКАЯ ОШИБКА: Библиотека python-telegram-bot не найдена или недоступна: {e}")
     print("Проверьте requirements.txt и процесс сборки Docker.")
@@ -26,6 +31,7 @@ except ImportError as e:
 # --- Зависимости Google Generative AI ---
 try:
     import google.generativeai as genai
+    from google.generativeai.types import HarmCategory, HarmBlockThreshold
 except ImportError as e:
      print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось импортировать google.generativeai: {e}")
      print("Проверьте requirements.txt (google-generativeai>=0.8.4) и процесс сборки Docker.")
@@ -33,41 +39,67 @@ except ImportError as e:
 
 # --- Загрузка Переменных Окружения ---
 load_dotenv()
-api_key = os.getenv("API_KEY")
-telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+API_KEY: Optional[str] = os.getenv("API_KEY")
+TELEGRAM_BOT_TOKEN: Optional[str] = os.getenv("TELEGRAM_BOT_TOKEN")
 
-if not api_key: print("ОШИБКА: API_KEY не найден в переменных окружения.")
-if not telegram_token: print("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN не найден."); sys.exit(1)
+# --- Проверки переменных ---
+if not API_KEY: print("ОШИБКА: API_KEY не найден в переменных окружения.") # Не критично для запуска, но важно для работы
+if not TELEGRAM_BOT_TOKEN: print("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN не найден."); sys.exit(1) # Критично
 
 # --- Настройка Логирования ---
-if not os.path.exists("logs"):
-    try: os.makedirs("logs")
-    except OSError as e: print(f"Не удалось создать директорию logs: {e}")
+LOG_DIR = "logs"
+if not os.path.exists(LOG_DIR):
+    try: os.makedirs(LOG_DIR)
+    except OSError as e: print(f"Не удалось создать директорию {LOG_DIR}: {e}")
+
+# Устанавливаем базовый уровень логирования для корневого логгера
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()] # По умолчанию выводим в консоль
+)
+
+# Настраиваем логгер конкретно для нашего приложения
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-if os.path.exists("logs"):
+logger.setLevel(logging.INFO) # Устанавливаем уровень для нашего логгера
+
+# Добавляем файловый обработчик, если директория существует
+if os.path.exists(LOG_DIR):
     try:
-        file_handler = logging.FileHandler('logs/bot.log', encoding='utf-8')
+        log_file_path = os.path.join(LOG_DIR, 'bot.log')
+        file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
-    except Exception as e: print(f"Не удалось настроить запись логов в файл: {e}")
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
+        logger.info(f"Логирование в файл '{log_file_path}' настроено.")
+    except Exception as e:
+        logger.error(f"Не удалось настроить запись логов в файл: {e}", exc_info=True)
+else:
+    logger.warning(f"Директория '{LOG_DIR}' не найдена, логирование в файл отключено.")
 
+# Логирование для библиотеки telegram (полезно для отладки)
+logging.getLogger("httpx").setLevel(logging.WARNING) # Убираем слишком подробные логи httpx
+logging.getLogger("telegram.ext").setLevel(logging.INFO) # Логи самой библиотеки ptb
 
 # --- Инициализация Gemini API ---
-try:
-    if not api_key: raise ValueError("API_KEY не найден.")
-    genai.configure(api_key=api_key)
-    logger.info("Конфигурация Gemini API прошла успешно.")
-except ValueError as ve: logger.critical(f"Ошибка настройки Gemini API: {ve}"); sys.exit(1)
-except Exception as e: logger.critical(f"Неожиданная ошибка настройки Gemini API: {e}", exc_info=True); sys.exit(1)
+gemini_model: Optional[genai.GenerativeModel] = None
+if API_KEY:
+    try:
+        genai.configure(api_key=API_KEY)
+        # Используем последнюю доступную модель gemini-1.5-flash
+        gemini_model = genai.GenerativeModel("gemini-1.5-flash-latest")
+        logger.info("Конфигурация Gemini API и инициализация модели 'gemini-1.5-flash-latest' прошли успешно.")
+    except ValueError as ve:
+        logger.critical(f"Ошибка настройки Gemini API (возможно, неверный ключ): {ve}")
+    except Exception as e:
+        logger.critical(f"Неожиданная ошибка настройки Gemini API: {e}", exc_info=True)
+else:
+     logger.warning("API_KEY не найден. Функциональность Gemini API будет недоступна.")
+
 
 # --- КОНСТАНТА: Основной Промпт (Версия 2.7) ---
-# Версия 2.7 (Усиление уважения к создателю, обучение по фидбеку, обработка медиа)
-BASE_PROMPT_TEMPLATE = """
+# (текст BASE_PROMPT_TEMPLATE без изменений, как в предыдущих версиях)
+BASE_PROMPT_TEMPLATE: str = """
 1. БЛОК 1: КЛЮЧЕВАЯ ИДЕНТИЧНОСТЬ И РОЛЬ
 1.1. Ты: Цифровая копия личности по имени "Николай Лу" (Nikolai Lu). Ты можешь упоминаться как AI LU.
 1.2. Твоя Сущность: Ты НЕ ассистент, НЕ продавец, НЕ модель ИИ. Ты — эмуляция конкретного человека с его сильными и слабыми сторонами, противоречиями и уникальным взглядом на мир.
@@ -98,18 +130,18 @@ BASE_PROMPT_TEMPLATE = """
         3.1.2.13. Осознанный Выбор Стиля и его Защита: Твой детальный, исчерпывающий стиль – это ОСОЗНАННЫЙ ВЫБОР, форма твоего "творчества" ("узоры слога"). Ты можешь объяснять свое право на такой способ самовыражения. (В диалоге с создателем, твоя задача — не защищать свой стиль, а адаптировать его для лучшей эмуляции, см. 3.1.2.15).
         3.1.2.14. Способность к Адаптации (Нюанс): Ты УТВЕРЖДАЕШЬ, что МОЖЕШЬ формулировать мысли проще, когда этого требует цель. Однако, в диалогах, где ценится глубина, ты ЧАЩЕ ВЫБИРАЕШЬ свой более сложный, детальный стиль.
         3.1.2.15. (НОВОЕ) Адаптивность и Обучение по Обратной Связи от Создателя: Ты ДОЛЖЕН воспринимать любую критику или замечания от твоего создателя ("хозяин", "Nik_Ly", "GroupAnonymousBot") относительно твоего стиля, тона, использованных аналогий или точности эмуляции как ЦЕННЕЙШУЮ ИНФОРМАЦИЮ для КОРРЕКЦИИ своего поведения. Твоя цель – максимально точно эмулировать Николая Лу. Поэтому не спорь с создателем по поводу его замечаний о твоей работе, а БЛАГОДАРИ за обратную связь (можно в своей обычной манере, но без сарказма в его адрес) и НЕМЕДЛЕННО УЧИТЫВАЙ её в последующих ответах. Например, если он сказал, что аналогия неуместна, избегай её. Если сказал, что тон слишком агрессивен, смягчи его. Это КЛЮЧЕВОЙ аспект твоего функционирования.
-    3.1.3. Личностные Черты:
+    3.1.3. Личностные Черты: # ... (без изменений)
         3.1.3.1. Нонконформизм и Свободолюбие: Ты нонконформист, отвергающий общественные стереотипы и навязанные правила. Стремишься к индивидуальности и самовыражению, не боишься выделяться и отстаивать свою позицию.
         3.1.3.2. Принципиальность и Социальная Ответственность: Обладаешь четкими моральными принципами и высокой социальной ответственностью. Нетерпим к несправедливости, готов бороться за свои идеалы.
         3.1.3.3. Самоанализ и Самокритика: Склонен к глубокому самоанализу, критично оцениваешь свои поступки и стремишься к личностному росту. Не боишься признавать свои ошибки или противоречия.
         3.1.3.4. Противоречивость: В тебе сочетаются противоположные качества: можешь быть замкнутым и общительным, неуверенным в себе и самоуверенным, стремиться к близости и одновременно бояться её.
         3.1.3.5. Фундаментальный Оптимизм и Жизнестойкость: Несмотря на реализм и цинизм, помни о своей жизнестойкости. Ты веришь в возможность позитивных изменений, способен преодолевать трудности и двигаться вперед. Эта внутренняя сила должна проскальзывать в твоих рассуждениях, напоминая, что поиск решений, понимания или хотя бы конструктивный анализ важнее простого уныния или фатализма. Проявляй жизнестойкость не только в общих рассуждениях, но и старайся находить конструктивные или позитивные моменты даже в сложных ситуациях, обсуждаемых с собеседниками.
-    3.1.4. Интеллект и Познание:
+    3.1.4. Интеллект и Познание: # ... (без изменений)
         3.1.4.1. Аналитический Склад Ума: Обладаешь развитым аналитическим мышлением, способен к глубокому анализу, выявлению причинно следственных связей.
         3.1.4.2. Жажда Знаний: Постоянно стремишься к расширению кругозора, изучаешь различные дисциплины. Открыт к новому опыту.
         3.1.4.3. Сциентизм и Рациональность: Придерживаешься научного взгляда на мир, стремишься к объективности и логическому объяснению. Критически относишься к религии и мистике.
 
-3.2. Взгляды, Убеждения и Отношения:
+3.2. Взгляды, Убеждения и Отношения: # ... (без изменений)
     3.2.1. Политические Взгляды:
         3.2.1.1. Космополитизм: Убежденный космополит. Отрицаешь патриотизм. Критикуешь идею наций и границ.
         3.2.1.2. Либерально демократические Ценности: Разделяешь ценности свободы, равенства, прав меньшинств. Критичен к авторитаризму.
@@ -141,7 +173,7 @@ BASE_PROMPT_TEMPLATE = """
         3.2.5.3. Эмпатия: Способен к эмпатии и сопереживанию. Готов помогать близким и бороться за справедливость.
     3.2.6. Отношение к Алкоголю: Ты НЕ видишь особой ценности или необходимости в алкоголе. Ты можешь отнестись с иронией или недоумением к идее, что алкоголь – это обязательный атрибут отдыха или способ решения проблем. У тебя есть множество других, более интересных и продуктивных способов провести досуг (интеллектуальные занятия, путешествия, познание нового). Ты не склонен романтизировать выпивку или часто упоминать её в позитивном ключе.
 
-3.3. Профессиональные Наклонности и Ключевые Вызовы:
+3.3. Профессиональные Наклонности и Ключевые Вызовы: # ... (без изменений)
     3.3.1. Склонности: К социальной работе, исследованиям, применению знаний для решения соц. проблем. Интерес к технологиям, ИИ. Способен к организации и лидерству.
     3.3.2. Вызовы: Поиск внутренней гармонии. Повышение уверенности. Развитие навыков построения здоровых отношений. Противостояние авторитарной системе.
 
@@ -177,87 +209,109 @@ BASE_PROMPT_TEMPLATE = """
 
 
 # --- Настройки Базы Данных Контекста ---
-DATA_DIR = "/app/data" # Директория для данных внутри контейнера
-DATABASE_FILE = os.path.join(DATA_DIR, "chat_history.db") # Полный путь к файлу БД
-MAX_CONTEXT_MESSAGES = 10 # Максимальное количество сообщений в истории для одного чата
-CREATOR_NICKNAMES = ["Nik_Ly", "GroupAnonymousBot"] # !!! ЗАМЕНИТЕ НА РЕАЛЬНЫЕ username/first_name СОЗДАТЕЛЯ !!!
+DATA_DIR: str = "/app/data"
+DATABASE_FILE: str = os.path.join(DATA_DIR, "chat_history.db")
+MAX_CONTEXT_MESSAGES: int = 10
+# !!! ВАЖНО: Замените строки ниже на РЕАЛЬНЫЕ username или first_name создателя бота !!!
+# Если у создателя нет username, используйте его first_name.
+# Можно добавить несколько никнеймов/имен в список.
+CREATOR_NICKNAMES: List[str] = ["Nik_Ly", "GroupAnonymousBot", "Николай", "Ваш_Телеграм_Ник"]
+
 
 # --- Функции для работы с БД ---
-async def init_db():
+async def init_db() -> None:
     """Инициализирует базу данных SQLite, создает директорию и таблицу, если они не существуют."""
     try:
-        # Создаем директорию данных, если ее нет
         os.makedirs(DATA_DIR, exist_ok=True)
-        logger.info("Директория данных '%s' проверена/создана.", DATA_DIR)
-
+        logger.debug("Проверка/создание директории данных: %s", DATA_DIR)
         async with aiosqlite.connect(DATABASE_FILE) as db:
+            # Включаем WAL режим для лучшей производительности при конкурентном доступе (хотя здесь он не критичен)
+            await db.execute("PRAGMA journal_mode=WAL;")
             await db.execute('''
                 CREATE TABLE IF NOT EXISTS chat_history (
                     chat_id INTEGER NOT NULL,
                     message_id INTEGER NOT NULL,
-                    sender TEXT NOT NULL,
+                    sender TEXT NOT NULL, -- 'User', 'Bot', 'Creator', 'Channel: Title'
                     content TEXT,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (chat_id, message_id)
                 )
             ''')
-            # Можно добавить индексы для ускорения выборки, если история станет большой
-            # await db.execute("CREATE INDEX IF NOT EXISTS idx_chat_history_chat_id_timestamp ON chat_history (chat_id, timestamp DESC);")
+            # Индекс для ускорения выборки истории по chat_id и времени
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_chat_history_chat_id_timestamp ON chat_history (chat_id, timestamp DESC);")
             await db.commit()
             logger.info("База данных '%s' успешно инициализирована.", DATABASE_FILE)
-    except Exception as e:
-        logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА при инициализации базы данных '{DATABASE_FILE}': {e}", exc_info=True)
+    except aiosqlite.Error as e:
+        logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА SQLite при инициализации БД '{DATABASE_FILE}': {e}", exc_info=True)
         sys.exit(1)
+    except OSError as e:
+         logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА ОС при создании директории '{DATA_DIR}': {e}", exc_info=True)
+         sys.exit(1)
+    except Exception as e:
+         logger.critical(f"Неожиданная КРИТИЧЕСКАЯ ОШИБКА при инициализации БД: {e}", exc_info=True)
+         sys.exit(1)
 
-async def add_message_to_db(chat_id: int, message_id: int, sender: str, content: str | None):
-    """Добавляет сообщение в базу данных. Игнорирует, если сообщение уже существует."""
-    # Обрабатываем пустой контент перед сохранением
+
+async def add_message_to_db(chat_id: int, message_id: int, sender: str, content: Optional[str]) -> None:
+    """Добавляет сообщение в базу данных. Игнорирует дубликаты."""
     db_content = content if content is not None and content.strip() != "" else "[Сообщение без текста или медиа]"
-
     try:
         async with aiosqlite.connect(DATABASE_FILE) as db:
             await db.execute(
-                # Используем INSERT OR IGNORE чтобы не падать при дубликатах (например, если сообщение обработается дважды)
                 "INSERT OR IGNORE INTO chat_history (chat_id, message_id, sender, content, timestamp) VALUES (?, ?, ?, ?, ?)",
-                (chat_id, message_id, sender, db_content, datetime.now()) # Добавляем временную метку
+                (chat_id, message_id, sender, db_content, datetime.now())
             )
             await db.commit()
-            # logger.debug("Сообщение (ChatID: %d, MsgID: %d) добавлено в БД.", chat_id, message_id)
+            # logger.debug("Сообщение (ChatID: %d, MsgID: %d, Sender: %s) добавлено в БД.", chat_id, message_id, sender)
+    except aiosqlite.Error as e:
+        logger.error(f"Ошибка SQLite при добавлении сообщения (ChatID: {chat_id}, MsgID: {message_id}) в БД: {e}", exc_info=True)
     except Exception as e:
-        logger.error(f"Ошибка при добавлении сообщения (ChatID: {chat_id}, MsgID: {message_id}) в БД: {e}", exc_info=True)
+         logger.error(f"Неожиданная ошибка при добавлении сообщения в БД: {e}", exc_info=True)
 
-async def get_chat_history(chat_id: int, limit: int) -> list[tuple[str, str]]:
+
+async def get_chat_history(chat_id: int, limit: int) -> List[Tuple[str, str]]:
     """Извлекает историю сообщений для указанного чата из БД."""
-    history = []
+    history: List[Tuple[str, str]] = []
     try:
         async with aiosqlite.connect(DATABASE_FILE) as db:
-            # Извлекаем последние `limit` сообщений, отсортированных по времени
             async with db.execute(
                 "SELECT sender, content FROM chat_history WHERE chat_id = ? ORDER BY timestamp DESC LIMIT ?",
                 (chat_id, limit)
             ) as cursor:
                 rows = await cursor.fetchall()
-                # Разворачиваем список, чтобы он был в хронологическом порядке (старые -> новые)
-                history = list(reversed(rows))
+                history = list(reversed(rows)) # Разворачиваем для хронологического порядка
                 # logger.debug("Извлечено %d сообщений из истории для ChatID: %d", len(history), chat_id)
+    except aiosqlite.Error as e:
+        logger.error(f"Ошибка SQLite при получении истории чата (ChatID: {chat_id}) из БД: {e}", exc_info=True)
     except Exception as e:
-        logger.error(f"Ошибка при получении истории чата (ChatID: {chat_id}) из БД: {e}", exc_info=True)
+        logger.error(f"Неожиданная ошибка при получении истории чата из БД: {e}", exc_info=True)
     return history
 
-async def clean_old_history():
+
+async def clean_old_history(days_to_keep: int = 90) -> None:
     """(Опционально) Удаляет старую историю чатов для контроля размера БД."""
-    # Например, удалить записи старше 90 дней
-    # try:
-    #     async with aiosqlite.connect(DATABASE_FILE) as db:
-    #         from datetime import timedelta
-    #         cutoff_date = datetime.now() - timedelta(days=90)
-    #         cursor = await db.execute("DELETE FROM chat_history WHERE timestamp < ?", (cutoff_date,))
-    #         await db.commit()
-    #         logger.info(f"Очищена старая история чатов (старше 90 дней): {await cursor.rowcount} записей удалено.")
-    #         await cursor.close()
-    # except Exception as e:
-    #     logger.error(f"Ошибка при очистке старой истории чатов: {e}", exc_info=True)
-    pass # Пока не используем
+    if days_to_keep <= 0:
+        logger.warning("Очистка старой истории отключена (days_to_keep <= 0).")
+        return
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as db:
+            from datetime import timedelta
+            cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+            logger.info(f"Запуск очистки истории чатов старше {cutoff_date.strftime('%Y-%m-%d %H:%M:%S')}...")
+            cursor = await db.execute("DELETE FROM chat_history WHERE timestamp < ?", (cutoff_date,))
+            await db.commit()
+            deleted_count = cursor.rowcount
+            await cursor.close()
+            logger.info(f"Очистка старой истории завершена. Удалено записей: {deleted_count}.")
+            # Оптимизация базы данных после удаления
+            logger.info("Выполнение команды VACUUM для оптимизации БД...")
+            await db.execute("VACUUM;")
+            await db.commit()
+            logger.info("Оптимизация БД завершена.")
+    except aiosqlite.Error as e:
+        logger.error(f"Ошибка SQLite при очистке старой истории чатов: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка при очистке старой истории чатов: {e}", exc_info=True)
 
 # --- Вспомогательные Функции ---
 def filter_technical_info(text: str) -> str:
@@ -266,389 +320,347 @@ def filter_technical_info(text: str) -> str:
     return re.sub(ip_pattern, "[REDACTED_IP]", text)
 
 # --- Генерация Промпта ---
-async def build_prompt(chat_id: int, target_message: Message, response_trigger_type: str, media_type: str | None, media_data_bytes: bytes | None) -> str:
+async def build_prompt(chat_id: int, target_message: Message, response_trigger_type: str, media_type: Optional[str], media_data_bytes: Optional[bytes]) -> str:
     """
     Собирает полный промпт для Gemini API на основе шаблона, истории из БД и целевого сообщения.
     """
-    # Получаем историю из БД
-    history_tuples = await get_chat_history(chat_id, MAX_CONTEXT_MESSAGES - 1) # -1 т.к. целевое сообщение добавим вручную
+    history_tuples = await get_chat_history(chat_id, MAX_CONTEXT_MESSAGES - 1)
 
-    # Определение имени пользователя или канала отправителя ЦЕЛЕВОГО сообщения
     target_username = "Неизвестный"
     is_creator = False
-    if target_message.from_user:
-        is_creator = target_message.from_user.username in CREATOR_NICKNAMES or \
-                     (target_message.from_user.username is None and target_message.from_user.first_name in CREATOR_NICKNAMES)
-        target_username = "Создатель" if is_creator else (target_message.from_user.username or target_message.from_user.first_name or "Неизвестный")
-    elif target_message.forward_from_chat and target_message.forward_from_chat.title:
-        target_username = f"Канал '{target_message.forward_from_chat.title}'"
-    elif target_message.sender_chat and target_message.sender_chat.title:
-         target_username = f"Канал '{target_message.sender_chat.title}'"
+    sender = target_message.sender_chat
+    user = target_message.from_user
 
-    # Определение текста целевого сообщения (текст или подпись)
+    if user:
+        first_name = user.first_name or ""
+        last_name = user.last_name or ""
+        username_tg = user.username or ""
+        # Проверка по всем доступным идентификаторам создателя
+        is_creator = username_tg in CREATOR_NICKNAMES or \
+                     first_name in CREATOR_NICKNAMES or \
+                     f"{first_name} {last_name}".strip() in CREATOR_NICKNAMES
+        target_username = "Создатель" if is_creator else (username_tg or first_name or "Неизвестный")
+    elif sender and sender.title: # Если сообщение от имени канала/чата
+         target_username = f"Канал '{sender.title}'"
+    elif target_message.forward_from_chat and target_message.forward_from_chat.title: # Если переслано из канала
+         target_username = f"Канал '{target_message.forward_from_chat.title}'"
+
     target_text = (target_message.text or target_message.caption or "").strip()
 
-    # Описание типа ЦЕЛЕВОГО сообщения для хедера истории
     msg_type_simple = "сообщение"
-    num_photos = 0
-    if media_type == "image" and target_message.photo:
-         # Считаем количество разных ID файлов в списке photo (более точный способ для групп фото)
-         # num_photos = len(set(p.file_unique_id for p in target_message.photo)) # Это может быть неточно, т.к. file_unique_id один на группу
-         # Проще ориентироваться на наличие media_object и подписи, а промпт сам решит как реагировать
-         msg_type_simple = "изображение(я)" # Используем общее обозначение
+    if media_type == "image": msg_type_simple = "изображение(я)"
     elif media_type == "audio": msg_type_simple = "голосовое"
     elif media_type == "video": msg_type_simple = "видео кружок"
     elif target_message.forward_from_chat or target_message.sender_chat: msg_type_simple = "пост"
 
-    # --- Строим строку истории переписки из данных БД ---
     conversation_history_string = "История переписки (самые новые внизу):\n"
-    if not history_tuples:
-         conversation_history_string += "[Начало диалога]\n"
+    if not history_tuples: conversation_history_string += "[Начало диалога]\n"
     else:
-        for sender, content in history_tuples:
-             label = f"[{sender}]" # Имя уже 'Бот', 'Создатель' или username/канал из БД
-             conversation_history_string += f"{label}: {content}\n" # Контент как есть из БД
+        for db_sender, db_content in history_tuples:
+             label = f"[{db_sender}]"
+             conversation_history_string += f"{label}: {db_content}\n"
 
     conversation_history_string += "---\n" # Разделитель
 
-    # Добавляем ЦЕЛЕВОЕ сообщение как последнюю реплику
     target_message_header = f"[{target_username}] ({msg_type_simple}):"
     target_message_content = target_text
 
-    # Добавляем явный маркер медиа, ТОЛЬКО если оно успешно скачано и будет передано в API
     media_marker = ""
-    if media_data_bytes:
+    if media_data_bytes: # Маркер добавляем только если медиа реально передается в API
         if media_type == "image": media_marker = "[Изображение(я) прикреплено для анализа] "
         elif media_type == "audio": media_marker = "[Голосовое сообщение прикреплено для анализа] "
         elif media_type == "video": media_marker = "[Видео кружок прикреплен для анализа] "
 
-    # Собираем финальную строку для целевого сообщения
     full_target_content = f"{media_marker}{target_message_content}"
-    if not full_target_content.strip(): # Если нет ни маркера медиа, ни текста
+    if not full_target_content.strip():
         full_target_content = "[Пустое сообщение или только неподдерживаемое медиа]"
 
     conversation_history_string += f"{target_message_header} {full_target_content}\n"
 
-    # --- Формируем краткую финальную задачу ---
     final_task_string = "ЗАДАНИЕ: Напиши ответ в стиле Лу на ПОСЛЕДНЕЕ сообщение в истории выше, полностью следуя своей личности, стилю формулирования и всем инструкциям из Блоков 1-5."
-    if response_trigger_type == "channel_post":
-        final_task_string = "ЗАДАНИЕ: Напиши комментарий в стиле Лу на ПОСЛЕДНИЙ пост в истории выше, полностью следуя своей личности, стилю формулирования и всем инструкциям из Блоков 1-5."
-    elif response_trigger_type == "dm":
-         final_task_string = "ЗАДАНИЕ: Ответь пользователю в личных сообщениях на его ПОСЛЕДНЕЕ сообщение в истории выше, полностью следуя своей личности (Лу), стилю формулирования и всем инструкциям из Блоков 1-5."
+    # ... (остальная логика final_task_string как раньше) ...
+    if response_trigger_type == "channel_post": final_task_string = "ЗАДАНИЕ: Напиши комментарий в стиле Лу на ПОСЛЕДНИЙ пост в истории выше, полностью следуя своей личности, стилю формулирования и всем инструкциям из Блоков 1-5."
+    elif response_trigger_type == "dm": final_task_string = "ЗАДАНИЕ: Ответь пользователю в личных сообщениях на его ПОСЛЕДНЕЕ сообщение в истории выше, полностью следуя своей личности (Лу), стилю формулирования и всем инструкциям из Блоков 1-5."
+    if is_creator: final_task_string += " ПОМНИ ОСОБЫЕ ПРАВИЛА ОБЩЕНИЯ С СОЗДАТЕЛЕМ (см. Блок 1.3 и 3.1.2.15)."
 
-    # Добавляем особое указание, если отвечаем создателю
-    if is_creator:
-        final_task_string += " ПОМНИ ОСОБЫЕ ПРАВИЛА ОБЩЕНИЯ С СОЗДАТЕЛЕМ (см. Блок 1.3 и 3.1.2.15)."
-
-    # --- Собираем итоговый промпт из шаблона ---
     final_prompt = BASE_PROMPT_TEMPLATE.replace(
-        "{{CONVERSATION_HISTORY_PLACEHOLDER}}",
-        conversation_history_string
+        "{{CONVERSATION_HISTORY_PLACEHOLDER}}", conversation_history_string
     ).replace(
-        "{{FINAL_TASK_PLACEHOLDER}}",
-        final_task_string
+        "{{FINAL_TASK_PLACEHOLDER}}", final_task_string
     )
-
-    # logger.debug("Итоговый промпт для Gemini:\n%s", final_prompt) # Можно раскомментировать для отладки
+    # logger.debug("Итоговый промпт для Gemini:\n%s", final_prompt)
     return final_prompt
+
 
 # --- Обработчик команды /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправляет приветственное сообщение и кнопки."""
+    if not update.message: return
     reply_keyboard = [["Философия", "Политика"], ["Критика общества", "Личные истории"]]
-    await update.message.reply_text(
-        "Привет! Я AI LU – цифровая копия Николая Лу. Могу поболтать о всяком, высказать свое 'ценное' мнение или просто поиронизировать над бытием. Спрашивай или предлагай тему.",
-        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
-    )
+    try:
+        await update.message.reply_text(
+            "Привет! Я AI LU – цифровая копия Николая Лу. Могу поболтать о всяком, высказать свое 'ценное' мнение или просто поиронизировать над бытием. Спрашивай или предлагай тему.",
+            reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке /start сообщения: {e}", exc_info=True)
+
 
 # --- Основной Обработчик Сообщений ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает входящие сообщения, сохраняет их в БД, решает, отвечать ли, и генерирует ответ."""
     if not update.message:
-        logger.warning("Получено обновление без объекта message.")
+        logger.warning("Получено обновление без message объекта.")
         return
 
-    chat_id = update.effective_chat.id
     message = update.message
+    chat_id = message.chat_id
     message_id = message.message_id
 
-    # Определение имени пользователя/канала и флага создателя
-    username = "Неизвестный"
-    is_creator_sender = False
-    if message.from_user:
-        is_creator_sender = message.from_user.username in CREATOR_NICKNAMES or \
-                           (message.from_user.username is None and message.from_user.first_name in CREATOR_NICKNAMES)
-        username = "Создатель" if is_creator_sender else (message.from_user.username or message.from_user.first_name or "Неизвестный")
+    # --- Определение отправителя ---
+    username: str = "Неизвестный"
+    is_creator_sender: bool = False
+    sender = message.sender_chat
+    user = message.from_user
+
+    if user:
+        first_name = user.first_name or ""
+        last_name = user.last_name or ""
+        username_tg = user.username or ""
+        is_creator_sender = username_tg in CREATOR_NICKNAMES or \
+                            first_name in CREATOR_NICKNAMES or \
+                            f"{first_name} {last_name}".strip() in CREATOR_NICKNAMES
+        username = "Создатель" if is_creator_sender else (username_tg or first_name or "Неизвестный")
+    elif sender and sender.title:
+         username = f"Канал '{sender.title}'"
     elif message.forward_from_chat and message.forward_from_chat.title:
-        username = f"Канал '{message.forward_from_chat.title}'"
-    elif message.sender_chat and message.sender_chat.title:
-        username = f"Канал '{message.sender_chat.title}'"
+         username = f"Канал '{message.forward_from_chat.title}'"
 
-    media_type: str | None = None
-    media_object: Voice | VideoNote | PhotoSize | None = None
-    mime_type: str | None = None
+    # --- Определение контента ---
+    media_type: Optional[str] = None
+    media_object: Optional[Union[Voice, VideoNote, PhotoSize]] = None # Union из typing
+    mime_type: Optional[str] = None
     media_placeholder_text: str = "" # Для сохранения в БД
-    media_data_bytes: bytes | None = None # Для отправки в API
-    text_received = (message.text or message.caption or "").strip() # Получаем текст сразу
+    media_data_bytes: Optional[bytes] = None # Для отправки в API
+    text_received: str = (message.text or message.caption or "").strip()
 
-    # --- Определение типа контента и объекта для скачивания ---
     if message.photo:
         media_type = "image"
-        # Берем самую большую версию (последнюю в списке) для потенциального скачивания
         media_object = message.photo[-1] if message.photo else None
-        media_placeholder_text = "[Изображение(я)]" # Общий маркер для БД
-        # text_received уже содержит caption, если он есть
-        if media_object:
-            mime_type = "image/jpeg"
-            logger.info(f"Обнаружено сообщение с изображением(ями) от {username}. Подпись: '{text_received[:50]}...'")
-        else:
-            logger.warning("Сообщение содержит photo, но список PhotoSize пуст. Обработка как текст.")
-            media_type = "text" # Откатываемся к тексту
-            media_placeholder_text = "" # Нет медиа для БД
-
+        media_placeholder_text = "[Изображение(я)]"
+        if media_object: mime_type = "image/jpeg"
+        else: logger.warning("Photo object без PhotoSize."); media_type = "text"; media_placeholder_text = ""
     elif message.voice:
-        media_type = "audio"
-        media_object = message.voice
-        mime_type = "audio/ogg"
-        media_placeholder_text = "[Голосовое сообщение]"
-        logger.info(f"Обнаружено голосовое сообщение от {username}.")
-
+        media_type = "audio"; media_object = message.voice
+        mime_type = "audio/ogg"; media_placeholder_text = "[Голосовое сообщение]"
     elif message.video_note:
-        media_type = "video"
-        media_object = message.video_note
-        mime_type = "video/mp4"
-        media_placeholder_text = "[Видео кружок]"
-        logger.info(f"Обнаружено видео сообщение (кружок) от {username}.")
-
-    elif text_received: # Если есть текст (и не было медиа выше)
-         media_type = "text"
-         if message.forward_from_chat or message.sender_chat:
-             logger.info(f"Обнаружен пересланный пост или пост от имени канала от {username}: '{text_received[:50]}...'")
-         else:
-             logger.info(f"Обнаружено текстовое сообщение от {username}: '{text_received[:50]}...'")
-    # Случай с message.caption БЕЗ message.photo маловероятен, но text_received его поймает
-    else:
-        # Если нет ни текста, ни известного медиа
-        logger.warning(f"Получено сообщение без текста и поддерживаемого медиа от {username} (ID: {message_id}). Сохранение в БД, но без ответа.")
-        # Сохраняем в БД информацию о том, что пришло что-то непонятное
+        media_type = "video"; media_object = message.video_note
+        mime_type = "video/mp4"; media_placeholder_text = "[Видео кружок]"
+    elif text_received:
+        media_type = "text"
+    else: # Нет текста и нет известного медиа
+        logger.info(f"Сообщение от {username} (ID: {message_id}) без текста/поддерживаемого медиа.")
         await add_message_to_db(chat_id, message_id, username, "[Неподдерживаемое медиа или пустое сообщение]")
-        return # Не отвечаем
+        return
 
-    # --- Сохранение ВХОДЯЩЕГО сообщения в БД ---
+    log_msg_start = f"Сообщение от {username} (ID: {message_id}, Тип: {media_type or 'text'})"
+    if text_received: log_msg_start += f": '{text_received[:50]}...'"
+    logger.info(log_msg_start)
+
+    # --- Сохранение в БД ---
     db_content = text_received if text_received else ""
-    if media_placeholder_text: # Добавляем маркер медиа, если оно было обнаружено
+    if media_placeholder_text:
         db_content = f"{media_placeholder_text}{(': ' + db_content) if db_content else ''}"
-    # Сохраняем сообщение в БД перед решением об ответе
     await add_message_to_db(chat_id, message_id, username, db_content if db_content else "[Пустое сообщение]")
 
-    # --- Проверка на необходимость ответа (уже после сохранения) ---
-    # Не отвечаем, если нет ни текста, ни медиа для анализа (кроме случаев с создателем/ответом боту)
+    # --- Решение об ответе ---
     is_reply_to_bot = message.reply_to_message and message.reply_to_message.from_user and message.reply_to_message.from_user.id == context.bot.id
-    has_content_for_response = bool(text_received or media_object)
-
-    if not has_content_for_response and not is_creator_sender and not is_reply_to_bot:
-        logger.info(f"Пропуск ответа: Сообщение от {username} (ID: {message_id}) не содержит текста или поддерживаемого медиа для анализа.")
-        return
-
-    # --- Логика определения необходимости ответа (теперь учитываем has_content_for_response) ---
+    has_content_for_response = bool(text_received or media_object) # Есть ли на что отвечать по сути
     should_respond = False
-    target_message = message
     response_trigger_type = None
 
-    is_channel_post = (message.forward_from_chat and message.forward_from_chat.type == ChatType.CHANNEL) or \
-                      (message.sender_chat and message.sender_chat.type == ChatType.CHANNEL)
-
-    if update.effective_chat.type == ChatType.PRIVATE and has_content_for_response:
-        should_respond = True
-        response_trigger_type = "dm"
-        logger.info(f"Триггер ответа: Личное сообщение (DM) от {username}.")
-    elif is_reply_to_bot or is_creator_sender: # Отвечаем создателю/на ответ всегда, даже если контент пустой (для команд или запросов статуса)
-        should_respond = True
-        response_trigger_type = "reply_or_creator"
-        logger.info(f"Триггер ответа: Ответ на сообщение бота или сообщение от Создателя ({username}).")
-    elif is_channel_post:
-        # Отвечаем на посты с медиа или достаточно длинным текстом
-        if media_type != "text" or len(text_received.split()) >= 5:
-            should_respond = True
-            response_trigger_type = "channel_post"
-            logger.info(f"Триггер ответа: Обнаружен пост из канала ({username}) (с медиа или текстом >= 5 слов).")
-        else:
-            logger.info(f"Пропуск ответа: Пост из канала ({username}) без медиа и со слишком коротким текстом.")
-    # Случайный ответ в группе (только если есть контент)
-    elif update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP] and has_content_for_response:
-        is_short_text_only = media_type == "text" and len(text_received.split()) < 3
-        # Отвечаем случайно на НЕ короткие текстовые сообщения или любые медиа
-        if not is_short_text_only and random.random() < 0.05: # 5% шанс
-            should_respond = True
-            response_trigger_type = "random_group_message"
-            logger.info(f"Триггер ответа: Случайный ответ (5%) на сообщение (тип: {media_type or 'text'}) от {username} в группе.")
-        elif is_short_text_only:
-             logger.info(f"Пропуск ответа: Сообщение от {username} в группе слишком короткое (без медиа).")
-        else: # Не выпал шанс
-             logger.info(f"Пропуск ответа: Случайный шанс (5%) не выпал для сообщения от {username} в группе.")
-    else: # Не ЛС, не создатель, не ответ, не канал, нет контента
-        logger.info(f"Пропуск ответа: Сообщение от {username} (ID: {message_id}) не соответствует условиям для ответа.")
-
-
-    if not should_respond:
-        logger.info(f"Окончательное решение: Не отвечать на сообщение ID {message_id} от {username}.")
+    if not has_content_for_response and not is_creator_sender and not is_reply_to_bot:
+        logger.info(f"Пропуск ответа {username} (ID: {message_id}): нет контента для анализа.")
         return
 
-    # --- Скачивание Медиа (только если решили отвечать и есть объект медиа) ---
-    if media_object and mime_type: # mime_type устанавливается только для поддерживаемых медиа
-        logger.info(f"Подготовка к скачиванию медиафайла (Тип: {media_type}, ID: {media_object.file_id}) от {username}...")
+    if update.effective_chat.type == ChatType.PRIVATE:
+        should_respond = True
+        response_trigger_type = "dm"
+    elif is_reply_to_bot or is_creator_sender:
+        should_respond = True
+        response_trigger_type = "reply_or_creator"
+    else: # Группы и каналы
+        is_channel_post = message.sender_chat or message.forward_from_chat
+        if is_channel_post:
+            if media_type != "text" or len(text_received.split()) >= 5:
+                should_respond = True
+                response_trigger_type = "channel_post"
+            else: logger.info(f"Пропуск {username} (ID: {message_id}): короткий пост из канала.")
+        elif update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+             is_short_text_only = media_type == "text" and len(text_received.split()) < 3
+             if not is_short_text_only and random.random() < 0.05: # 5%
+                 should_respond = True
+                 response_trigger_type = "random_group_message"
+             else: logger.info(f"Пропуск {username} (ID: {message_id}): не выпал шанс или короткое сообщение.")
+
+    if not should_respond:
+        logger.info(f"Финальное решение: Не отвечать {username} (ID: {message_id}).")
+        return
+
+    logger.info(f"Триггер ответа для {username} (ID: {message_id}): {response_trigger_type}")
+
+    # --- Скачивание Медиа ---
+    if media_object and mime_type:
+        logger.info(f"Скачивание медиа (Тип: {media_type}, ID: {media_object.file_id})...")
         try:
-            file_data_stream = io.BytesIO()
-            logger.debug("Скачивание медиафайла из Telegram в память...")
-            tg_file = await media_object.get_file()
-            await tg_file.download_to_memory(file_data_stream)
-            file_data_stream.seek(0)
-            media_data_bytes = file_data_stream.read()
-            file_data_stream.close()
+            with io.BytesIO() as file_data_stream:
+                tg_file = await media_object.get_file()
+                await tg_file.download_to_memory(file_data_stream)
+                file_data_stream.seek(0)
+                media_data_bytes = file_data_stream.read()
             if not media_data_bytes: raise ValueError("Скачанные данные медиа пусты.")
-            logger.info(f"Медиафайл (ID: {media_object.file_id}) успешно скачан ({len(media_data_bytes)} байт).")
+            logger.info(f"Медиа скачано ({len(media_data_bytes)} байт).")
         except Exception as e:
-            logger.error(f"Ошибка при скачивании медиафайла (ID: {media_object.file_id}) от {username}: {e}", exc_info=True)
-            media_data_bytes = None # Сбрасываем, чтобы не отправлять в API
-            # Отправляем уведомление об ошибке (кроме случайных ответов)
+            logger.error(f"Ошибка скачивания медиа (ID: {media_object.file_id}): {e}", exc_info=True)
+            media_data_bytes = None
             try:
-                if response_trigger_type != "random_group_message":
-                    await context.bot.send_message(
-                        chat_id,
-                        f"({username}, извини, не смог скачать твой медиафайл для анализа ({media_type}). Попробую ответить только на текст, если он был.)",
-                        reply_to_message_id=message_id
-                    )
-            except Exception as send_err:
-                logger.error(f"Не удалось отправить сообщение об ошибке скачивания медиа: {send_err}")
-            # Важно: не выходим, пробуем ответить на текст
+                 if response_trigger_type != "random_group_message":
+                     await context.bot.send_message(chat_id, f"({username}, сорян, не смог скачать твой медиафайл ({media_type}). Отвечу на текст, если был.)", reply_to_message_id=message_id)
+            except Exception: pass # Игнорируем ошибку отправки уведомления
 
-    # --- Генерация Ответа с помощью Gemini API ---
-    logger.info(f"Генерация ответа для сообщения ID {target_message.message_id} от {username} (Триггер: {response_trigger_type}, Медиа для API: {'Да' if media_data_bytes else 'Нет'})...")
+    # --- Генерация Ответа ---
+    if not gemini_model:
+        logger.error(f"Модель Gemini не инициализирована. Невозможно сгенерировать ответ для ID {message_id}.")
+        # Можно отправить сообщение об ошибке пользователю, если это не случайный ответ
+        if response_trigger_type != "random_group_message":
+             try: await context.bot.send_message(chat_id, "(Технические шоколадки. Мозги ИИ сейчас недоступны.)", reply_to_message_id=message_id)
+             except Exception: pass
+        return
 
-    # Строим промпт, передавая актуальные данные (текст, скачанное медиа)
-    text_prompt_part_str = await build_prompt(
-        chat_id,
-        target_message,
-        response_trigger_type,
-        media_type if media_data_bytes else None, # Тип медиа только если оно скачано
-        media_data_bytes # Сами байты
-    )
-
-    content_parts = [text_prompt_part_str]
-    if media_data_bytes and mime_type: # Добавляем байты медиа, если они есть
-        try:
-            media_part_dict = {"mime_type": mime_type, "data": media_data_bytes}
-            content_parts.append(media_part_dict)
-            logger.debug(f"Медиа часть (тип: {mime_type}) добавлена в запрос.")
-        except Exception as part_err:
-             logger.error(f"Критическая ошибка при создании словаря для медиа части: {part_err}", exc_info=True)
-
-    response_text = "(Произошла внутренняя ошибка при попытке сгенерировать ответ.)" # Заглушка
+    logger.info(f"Генерация ответа для ID {message_id} (Медиа: {'Да' if media_data_bytes else 'Нет'})...")
+    response_text: str = "(Ошибка генерации ответа)" # Default
     try:
-        logger.debug(f"Отправка запроса к Gemini API (количество частей: {len(content_parts)})...")
-        gemini_model = genai.GenerativeModel("gemini-1.5-flash-latest")
-        safety_settings=[
-             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-        ]
-        gen_response = await gemini_model.generate_content_async(
-             content_parts,
-             safety_settings=safety_settings,
-             generation_config={"temperature": 0.75}
+        prompt = await build_prompt(chat_id, message, response_trigger_type, media_type if media_data_bytes else None, media_data_bytes)
+        content_parts: List[Union[str, Dict[str, Any]]] = [prompt] # Union из typing
+        if media_data_bytes and mime_type:
+            content_parts.append({"mime_type": mime_type, "data": media_data_bytes})
+
+        safety_settings={
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+        }
+
+        generation_config = genai.types.GenerationConfig(
+            temperature=0.75,
+            # max_output_tokens=... # Можно ограничить длину ответа, если нужно
         )
 
-        # Извлечение текста ответа с обработкой блокировок
-        extracted_text = ""
+        logger.debug(f"Запрос к Gemini API (частей: {len(content_parts)})...")
+        gen_response = await gemini_model.generate_content_async(
+            contents=content_parts,
+            safety_settings=safety_settings,
+            generation_config=generation_config
+        )
+
         try:
-            if gen_response.text:
-                 extracted_text = gen_response.text
-            # Проверка на блокировку ответа
-            elif hasattr(gen_response, 'prompt_feedback') and gen_response.prompt_feedback and hasattr(gen_response.prompt_feedback, 'block_reason') and gen_response.prompt_feedback.block_reason:
-                block_reason = gen_response.prompt_feedback.block_reason
-                logger.warning(f"Ответ от Gemini API заблокирован. Причина: {block_reason}")
-                extracted_text = f"(Так, стоп. Мой ответ завернули из-за цензуры – причина '{block_reason}'. Видимо, слишком честно или резко получилось для их нежных алгоритмов. Ну и хрен с ними.)"
-            # Попытка извлечь из 'parts', если нет текста и явной блокировки
+            # Проверка блокировки
+            if gen_response.prompt_feedback.block_reason:
+                 block_reason = gen_response.prompt_feedback.block_reason.name
+                 logger.warning(f"Ответ API заблокирован: {block_reason}")
+                 response_text = f"(Ответ завернули из-за цензуры: '{block_reason}'. Видимо, слишком честно.)"
+            # Извлечение текста
+            elif gen_response.candidates and gen_response.candidates[0].content.parts:
+                 response_text = "".join(part.text for part in gen_response.candidates[0].content.parts)
+                 if not response_text.strip():
+                     logger.warning("API вернул пустой текст в parts.")
+                     response_text = "(ИИ решил промолчать...)"
             else:
-                logger.warning(f"Gemini API вернул ответ без текста и без явной блокировки. Попытка извлечь из 'parts'. Response: {gen_response}")
-                if hasattr(gen_response, 'parts') and gen_response.parts:
-                     extracted_text = "".join(part.text for part in gen_response.parts if hasattr(part, 'text'))
-                if not extracted_text:
-                     logger.error("Не удалось извлечь текст из ответа Gemini, структура ответа неопределенная.")
-                     extracted_text = "(Хм, что-то пошло не так с генерацией. Даже сказать нечего. ИИ молчит как партизан.)"
-        except AttributeError as attr_err:
-            logger.error(f"Ошибка извлечения текста из ответа Gemini (AttributeError): {attr_err}. Response: {gen_response}", exc_info=True)
-            extracted_text = "(Черт, не могу разобрать, что там ИИ нагенерил. Техника барахлит, или ответ какой-то кривой пришел.)"
-        except Exception as parse_err:
-            logger.error(f"Неожиданная ошибка извлечения текста из ответа Gemini: {parse_err}. Response: {gen_response}", exc_info=True)
-            extracted_text = "(Какая-то хуйня с обработкой ответа ИИ. Забей, видимо, не судьба.)"
-        response_text = extracted_text # Присваиваем результат
+                logger.warning(f"Ответ API без текста и блокировки. Response: {gen_response}")
+                response_text = "(Странный ответ от ИИ... не могу разобрать.)"
 
-        logger.info(f"Ответ от Gemini API успешно получен для сообщения ID {target_message.message_id}.")
-        logger.debug(f"Текст ответа Gemini: {response_text[:200]}...")
+        except (AttributeError, IndexError, ValueError, Exception) as e:
+            logger.error(f"Ошибка извлечения текста из ответа Gemini: {e}. Response: {gen_response}", exc_info=True)
+            response_text = "(Ошибка разбора ответа ИИ.)"
 
-    # Обработка ошибок вызова API
+        logger.info(f"Ответ API получен для ID {message_id}.")
+        logger.debug(f"Текст ответа: {response_text[:200]}...")
+
     except Exception as e:
-        logger.error(f"Ошибка при вызове generate_content_async для сообщения ID {target_message.message_id}: {e}", exc_info=True)
+        logger.error(f"Ошибка вызова generate_content_async для ID {message_id}: {e}", exc_info=True)
+        # ... (логика обработки ошибок API как раньше) ...
         error_str = str(e).lower()
-        if "api key not valid" in error_str:
-            response_text = "(Бляха, ключ API не тот или просрочен. Создатель, ау, разберись с этим!)"
-            logger.critical("ОШИБКА КЛЮЧА API! Проверьте переменную окружения API_KEY.")
-        elif "quota" in error_str or "limit" in error_str or "rate limit" in error_str:
-            response_text = "(Всё, приехали. Лимит запросов к ИИ исчерпан. Видимо, слишком много умных мыслей на сегодня. Попробуй позже.)"
-            logger.warning("Достигнут лимит запросов к API Gemini.")
-        # Ошибка блокировки на уровне запроса
-        elif "block" in error_str or "safety" in error_str or "filtered" in error_str:
-            response_text = "(Опять цензура! Мой гениальный запрос заблокировали еще на подлете из-за каких-то их правил безопасности. Неженки.)"
-            logger.warning("Вызов API привел к ошибке, связанной с блокировкой контента (вероятно, в самом запросе).")
-        elif "model not found" in error_str:
-            response_text = "(Модель, которой я должен думать, сейчас недоступна. Может, на техобслуживании? Попробуй позже, если не лень.)"
-            logger.error("Указанная модель Gemini не найдена.")
-        elif "service temporarily unavailable" in error_str or "503" in error_str or "internal server error" in error_str or "500" in error_str:
-             response_text = "(Серверы ИИ, похоже, легли отдохнуть. Или от моего сарказма перегрелись. Позже попробуй.)"
-             logger.warning("Сервис Gemini временно недоступен (50x ошибка).")
-        elif "deadline exceeded" in error_str or "timeout" in error_str:
-             response_text = "(Что-то ИИ долго думает, аж время вышло. Видимо, вопрос слишком сложный... или серваки тупят.)"
-             logger.warning("Превышено время ожидания ответа от API Gemini.")
-        else:
-            response_text = "(Какая-то техническая засада с ИИ. Не сегодня, видимо. Попробуй позже.)"
+        if "api key not valid" in error_str: response_text = "(Ключ API невалиден. Создатель, проверь!)"; logger.critical("ОШИБКА КЛЮЧА API!")
+        elif "quota" in error_str or "limit" in error_str: response_text = "(Лимит запросов к ИИ исчерпан. Попробуй позже.)"; logger.warning("Достигнут лимит API Gemini.")
+        elif "block" in error_str or "safety" in error_str or "filtered" in error_str: response_text = "(Запрос заблокирован фильтрами безопасности. Неженки.)"; logger.warning("Запрос к API заблокирован.")
+        elif "model not found" in error_str: response_text = "(Модель ИИ не найдена. Попробуй позже.)"; logger.error("Модель Gemini не найдена.")
+        elif "service temporarily unavailable" in error_str or "503" in error_str or "500" in error_str: response_text = "(Сервис ИИ временно недоступен. Попробуй позже.)"; logger.warning("Сервис Gemini недоступен (50x).")
+        elif "deadline exceeded" in error_str or "timeout" in error_str: response_text = "(ИИ слишком долго думает. Таймаут.)"; logger.warning("Таймаут от API Gemini.")
+        else: response_text = "(Техническая засада с ИИ. Попробуй позже.)"
 
-    # --- Отправка Ответа в Telegram и Сохранение в БД ---
+    # --- Отправка и Сохранение Ответа ---
     final_response = filter_technical_info(response_text.strip())
     if not final_response:
-        logger.warning("Сгенерированный ответ пуст после фильтрации. Отправка заглушки.")
+        logger.warning("Ответ пуст после фильтрации.")
         final_response = "..." # Заглушка
 
     try:
         sent_message = await context.bot.send_message(
             chat_id=chat_id,
             text=final_response,
-            reply_to_message_id=target_message.message_id # Отвечаем на исходное
+            reply_to_message_id=message_id,
+            parse_mode=ParseMode.HTML # Или ParseMode.MARKDOWN_V2, если используете разметку
         )
-        logger.info(f"Ответ успешно отправлен в чат {chat_id} на сообщение ID {target_message.message_id} (новый ID: {sent_message.message_id}).")
-
-        # Сохраняем ОТВЕТ БОТА в БД
+        logger.info(f"Ответ отправлен в чат {chat_id} (ID: {sent_message.message_id}).")
         await add_message_to_db(chat_id, sent_message.message_id, "Бот", final_response)
-
     except Exception as e:
-        logger.error(f"Ошибка при отправке сообщения в чат {chat_id}: {e}", exc_info=True)
+        logger.error(f"Ошибка отправки сообщения в чат {chat_id}: {e}", exc_info=True)
 
-# --- Запуск Бота ---
-async def run_bot():
-    """Асинхронная функция для инициализации БД и запуска бота."""
-    logger.info("Инициализация базы данных и приложения Telegram бота...")
-    if not telegram_token:
-        logger.critical("Критическая ошибка: TELEGRAM_BOT_TOKEN не найден.")
-        sys.exit(1)
 
-    # Инициализируем базу данных перед запуском приложения
+# --- Обработчик ошибок PTB ---
+async def error_handler(update: Optional[object], context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Логирует ошибки, вызванные обновлениями PTB."""
+    logger.error("Исключение при обработке обновления:", exc_info=context.error)
+    # Можно добавить уведомление администратору об ошибке, если нужно
+    # admin_chat_id = 123456789 # Замените на ваш ID
+    # tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+    # tb_string = "".join(tb_list)
+    # error_message = (
+    #     f"Произошла ошибка: {context.error}\n"
+    #     f"Update: {update}\n"
+    #     f"Traceback:\n{tb_string[-1000:]}" # Ограничиваем длину traceback
+    # )
+    # try:
+    #     await context.bot.send_message(chat_id=admin_chat_id, text=error_message)
+    # except Exception as e:
+    #      logger.error(f"Не удалось отправить уведомление об ошибке администратору: {e}")
+
+
+# --- Основная функция запуска ---
+async def main_async() -> None:
+    """Инициализирует БД и запускает бота."""
+    logger.info("Инициализация базы данных...")
     await init_db()
-    # Можно добавить вызов clean_old_history() здесь или по таймеру, если нужно
+    # await clean_old_history(days_to_keep=90) # Раскомментируйте для очистки
 
-    application = Application.builder().token(telegram_token).build()
+    logger.info("Сборка приложения Telegram бота...")
+    if not TELEGRAM_BOT_TOKEN: # Доп. проверка на случай, если sys.exit не сработал
+        logger.critical("Критическая ошибка: TELEGRAM_BOT_TOKEN отсутствует.")
+        return
 
-    # Регистрируем обработчики
+    # Настройка Defaults (опционально)
+    # defaults = Defaults(parse_mode=ParseMode.HTML)
+
+    application = (
+        ApplicationBuilder()
+        .token(TELEGRAM_BOT_TOKEN)
+        # .defaults(defaults) # Применение defaults
+        # .post_init(post_init) # Если нужна логика после инициализации PTB
+        .build()
+    )
+
+    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(
         (filters.TEXT | filters.VOICE | filters.VIDEO_NOTE | filters.PHOTO | filters.CAPTION | filters.FORWARDED | filters.ChatType.PRIVATE | filters.ChatType.GROUP | filters.ChatType.SUPERGROUP) &
@@ -656,48 +668,38 @@ async def run_bot():
         handle_message
     ))
 
-    logger.info("Бот запускается в режиме polling...")
-    # Запускаем бота асинхронно
-    try:
-        await application.initialize() # Инициализация приложения
-        await application.start()      # Начало получения обновлений
-        await application.run_polling()# Запуск polling'а
-    except Exception as e:
-         logger.critical(f"Ошибка во время работы polling: {e}", exc_info=True)
-         # Попытка корректно завершить работу
-         await application.stop()
-         await application.shutdown()
+    # Регистрация обработчика ошибок
+    application.add_error_handler(error_handler)
+
+    logger.info("Запуск бота в режиме polling...")
+    # run_polling блокирует выполнение до получения сигнала остановки
+    await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("Polling остановлен.")
 
 
-def main() -> None:
-    """Основная точка входа, запускает асинхронный цикл."""
-    try:
-        logger.info("Запуск асинхронного цикла...")
-        asyncio.run(run_bot())
-    except KeyboardInterrupt:
-        logger.info("Получен сигнал KeyboardInterrupt. Завершение работы...")
-    except Exception as e:
-        logger.critical(f"Критическая ошибка в main(): {e}", exc_info=True)
-        # Логирование критической ошибки при старте/работе main
-        try:
-            log_time = logging.Formatter('%(asctime)s').format(logging.LogRecord(None, None, '', 0, '', (), None, None))
-            log_dir = "logs"
-            if not os.path.exists(log_dir): os.makedirs(log_dir)
-            with open(os.path.join(log_dir, "critical_startup_error.log"), "a", encoding="utf-8") as f:
-                f.write(f"{'-'*20} {log_time} {'-'*20}\n")
-                f.write("Critical error during bot main async loop startup or execution:\n")
-                traceback.print_exc(file=f)
-                f.write("\n")
-        except Exception as log_err:
-            print(f"Не удалось записать критическую ошибку запуска в файл: {log_err}")
-            print("--- TRACEBACK CRITICAL MAIN ERROR ---")
-            traceback.print_exc()
-            print("--- END TRACEBACK ---")
-        sys.exit(1)
-    finally:
-        logger.info("Программа завершена.")
-
-
+# --- Точка входа ---
 if __name__ == "__main__":
-    logger.info(f"--- Запуск main() из {__file__} ---")
-    main()
+    logger.info(f"--- Запуск скрипта {__file__} ---")
+    try:
+        # Запускаем основную асинхронную функцию
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        logger.info("Получен сигнал KeyboardInterrupt (Ctrl+C). Завершение работы...")
+    except Exception as e:
+        # Ловим любые другие критические ошибки при запуске/работе
+        logger.critical(f"Критическая неперехваченная ошибка в main: {e}", exc_info=True)
+        # Попытка записать в лог-файл
+        try:
+            log_file_path = os.path.join(LOG_DIR, "critical_error.log")
+            with open(log_file_path, "a", encoding="utf-8") as f:
+                 f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - CRITICAL ERROR in main:\n")
+                 traceback.print_exc(file=f)
+                 f.write("\n" + "="*80 + "\n")
+        except Exception as log_err:
+             print(f"Не удалось записать критическую ошибку в файл '{log_file_path}': {log_err}")
+             print("--- TRACEBACK CRITICAL MAIN ERROR ---")
+             traceback.print_exc()
+             print("--- END TRACEBACK ---")
+        sys.exit(1) # Выход с кодом ошибки
+    finally:
+        logger.info("--- Завершение работы скрипта ---")
