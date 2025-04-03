@@ -1,20 +1,19 @@
+# --- START OF FILE docker-compose.txt ---
+
 services:
   bot:
     build: .
-    container_name: botlushok
+    container_name: botlushok # Имя контейнера
     env_file:
-      - .env
+      - .env # Подключаем файл с переменными окружения
     environment:
+      # Передаем переменные внутрь контейнера (хотя env_file уже это делает, но так надежнее для некоторых систем)
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - API_KEY=${API_KEY}
-    restart: always
-    mem_limit: 700m
+    restart: always # Всегда перезапускать контейнер при падении или перезагрузке хоста
+    mem_limit: 700m # Лимит памяти (мониторьте реальное потребление и корректируйте при необходимости)
     volumes:
-      - ./logs:/app/logs
+      - ./logs:/app/logs # Пробрасываем папку логов для сохранения между перезапусками
+      - ./chat_history.db:/app/chat_history.db # Пробрасываем файл БД SQLite для сохранения контекста
 
-  telegram-bot:
-    image: san_bot_tg-telegram-bot
-    container_name: telegram-bot
-    command: "python bot.py"
-    restart: always
-    mem_limit: 200m
+# --- END OF FILE docker-compose.txt ---
