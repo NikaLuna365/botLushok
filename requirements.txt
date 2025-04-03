@@ -1,9 +1,4 @@
-# --- START OF FILE requirements.txt ---
-
-python-telegram-bot==20.3 # Оставляем пока эту версию, т.к. код написан под нее
+python-telegram-bot==20.3
 python-dotenv==1.0.0
 google-generativeai==0.8.4
-# charset-normalizer==3.2.0 # Убрано, т.к. не используется явно
-aiosqlite==0.19.0 # Добавлено для асинхронной работы с SQLite
-
-# --- END OF FILE requirements.txt ---
+charset-normalizer==3.2.0
