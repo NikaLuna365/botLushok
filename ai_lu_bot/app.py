@@ -1,13 +1,4 @@
 # ai_lu_bot/app.py
-# Точка входа в приложение AI LU Bot — polling‑режим.
-# Убедитесь, что файл лежит внутри пакета ai_lu_bot/:
-# ai_lu_bot/
-# ├─ __init__.py
-# ├─ app.py            ← этот файл
-# ├─ handlers/
-# │   └─ message.py    (содержит handle_message)
-# └─ ...
-
 import logging
 import os
 import sys
@@ -20,56 +11,87 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     filters,
+    ContextTypes,
 )
 
-# Поправка: start ещё не перенесён в handlers/message.py,
-# поэтому импортируем его из корневого bot_4_02.py
-from bot_4_02 import start        # <-- здесь теперь берём start
-from ai_lu_bot.handlers.message import handle_message  # handle_message в handlers
+# Импортируем /start из старого монолита (там промпт и старт остались без изменений)
+from bot_4_02 import start  
+from ai_lu_bot.handlers.message import handle_message
+from ai_lu_bot.services.gemini import GeminiService
 
 # -----------------------------------------------------------------------------
-# ЛОГИРОВАНИЕ И ОКРУЖЕНИЕ
+# Загрузка .env и настройка логов
 # -----------------------------------------------------------------------------
-load_dotenv()  # .env в репо нет — будет на сервере или локально
+load_dotenv()  # .env на сервере/ПК, в репо его нет
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not BOT_TOKEN:
+    print("CRITICAL: TELEGRAM_BOT_TOKEN не найден в окружении", file=sys.stderr)
+    sys.exit(1)
+
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-fmt = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-# Консоль
-sh = logging.StreamHandler()
-sh.setFormatter(fmt)
-logger.addHandler(sh)
-# Файл
-fh = logging.FileHandler(LOG_DIR / "bot.log", encoding="utf-8")
-fh.setFormatter(fmt)
-logger.addHandler(fh)
+
+_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+_sh = logging.StreamHandler()
+_sh.setFormatter(_formatter)
+logger.addHandler(_sh)
+_fh = logging.FileHandler(LOG_DIR / "bot.log", encoding="utf-8")
+_fh.setFormatter(_formatter)
+logger.addHandler(_fh)
 
 
+# -----------------------------------------------------------------------------
+# Критическая обёртка
+# -----------------------------------------------------------------------------
 def write_critical_log(exc: Exception) -> None:
-    """Записывает стек в logs/critical_startup_error.log при падении на старте."""
+    """Записывает полную трассировку в logs/critical_startup_error.log."""
     try:
-        with (LOG_DIR / "critical_startup_error.log").open("a", encoding="utf-8") as f:
-            f.write(f"{'-'*40}\n")
+        with open(LOG_DIR / "critical_startup_error.log", "a", encoding="utf-8") as f:
+            f.write(f"\n{'-'*40}\n")
             traceback.print_exception(exc, file=f)
-            f.write(f"{'-'*40}\n\n")
+            f.write(f"{'-'*40}\n")
     except Exception as e:
-        print("Не удалось записать critical_startup_error.log:", e, file=sys.stderr)
+        print("Failed to write critical startup log:", e, file=sys.stderr)
 
 
+# -----------------------------------------------------------------------------
+# Глобальный error handler
+# -----------------------------------------------------------------------------
+async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Unhandled exception in update", exc_info=context.error)
+    # Опционально: уведомить пользователя
+    try:
+        if getattr(update, "effective_chat", None):
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Извини, произошла непредвиденная ошибка. Попробуй позже."
+            )
+    except Exception:
+        pass
+
+
+# -----------------------------------------------------------------------------
+# Сборка приложения
+# -----------------------------------------------------------------------------
 def build_application() -> Application:
-    """Создаёт и настраивает telegram.ext.Application."""
-    if not BOT_TOKEN:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN не найден в окружении")
+    """Создаёт Application, регистрирует хэндлеры и сервисы."""
     app = Application.builder().token(BOT_TOKEN).build()
+
+    # Инициализация GeminiService и сохранение в bot_data
+    gemini_service = GeminiService()
+    app.bot_data["gemini"] = gemini_service
+
+    # Регистрация глобального error handler
+    app.add_error_handler(global_error_handler)
 
     # Команда /start
     app.add_handler(CommandHandler("start", start))
 
-    # Основной поток сообщений
+    # Основной обработчик сообщений
     app.add_handler(
         MessageHandler(
             (
@@ -87,16 +109,19 @@ def build_application() -> Application:
             handle_message,
         )
     )
+
     return app
 
 
+# -----------------------------------------------------------------------------
+# Entry‑point
+# -----------------------------------------------------------------------------
 def main() -> None:
-    """Инициализация и запуск бота (polling)."""
-    logger.info("=== AI LU Bot bootstrap ===")
+    logger.info("=== AI LU Bot bootstrap ===")
     try:
         application = build_application()
         logger.info("Бот запускается в режиме polling…")
-        # run_polling — синхронно блокирует текущий поток, сам управляет event loop
+        # close_loop=False, чтобы PTB не пытался закрывать внешний loop
         application.run_polling(close_loop=False)
     except Exception as exc:
         logger.critical("Startup failure: %s", exc, exc_info=True)
