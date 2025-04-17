@@ -1,157 +1,148 @@
-from __future__ import annotations
-
+# ai_lu_bot/handlers/message.py
+import io
 import logging
 import random
 import re
-from typing import Any, List
 
-from telegram import (
-    Message,
-    Update,
-    ReplyKeyboardMarkup,
-    Voice,
-    VideoNote,
-    PhotoSize,
-)
-from telegram.constants import ChatType
+from telegram import Update, ReplyKeyboardMarkup, Voice, VideoNote, PhotoSize
 from telegram.ext import ContextTypes
 
-from ..core.context import context_store
-from ..prompt.base_prompt import BASE_PROMPT_TEMPLATE
-from ..services.gemini import GeminiService
-from ..utils.media import download_media, MediaDownloadError
+from ai_lu_bot.services.gemini import GeminiService
+from ai_lu_bot.utils.media import download_media, MediaDownloadError
+from ai_lu_bot.core.context import chat_context_manager
+from bot_4_02 import filter_technical_info, build_prompt  # Промпт без изменений из монолита
 
 logger = logging.getLogger(__name__)
 
-# Helper regex for IP hiding
-_IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
-
-def _filter_technical_info(text: str) -> str:  # noqa: D401
-    """Remove public IP addresses before sending message."""
-    return _IP_PATTERN.sub("[REDACTED_IP]", text)
-
-
-def _build_prompt(
-    chat_id: int,
-    target_msg: Message,
-    conv_history: List[dict[str, Any]],
-    final_task: str,
-    media_type: str | None,
-) -> str:
-    history_str = "История переписки (самые новые внизу):\n"
-    if not conv_history:
-        history_str += "[Начало диалога]\n"
-    for msg in conv_history:
-        label = "[Бот]" if msg.get("from_bot") else f"[{msg.get('user')}]"
-        history_str += f"{label}: {msg.get('text')}\n"
-    history_str += "---\n"
-
-    user_label = (
-        "Создатель" if (target_msg.from_user and target_msg.from_user.username in ["Nik_Ly", "GroupAnonymousBot"]) else target_msg.from_user.first_name
-    )
-    header = f"[{user_label}] ({media_type or 'сообщение'}):"
-    content = target_msg.text or target_msg.caption or "[Пустое сообщение]"
-
-    history_str += f"{header} {content}\n"
-    return (
-        BASE_PROMPT_TEMPLATE.replace("{{CONVERSATION_HISTORY_PLACEHOLDER}}", history_str)
-        .replace("{{FINAL_TASK_PLACEHOLDER}}", final_task)
-    )
-
-# ──────────────────────────────────────────────────────────
-
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [["Философия", "Политика"], ["Критика общества", "Личные истории"]]
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /start."""
+    reply_keyboard = [["Философия", "Политика"], ["Критика общества", "Личные истории"]]
     await update.message.reply_text(
-        "Привет! Я AI LU — цифровая копия Николая Лу. Спрашивай!",
-        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True),
+        "Привет! Я AI LU – цифровая копия Николая Лу. Спрашивай или предлагай тему.",
+        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True),
     )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-    gemini: GeminiService = context.bot_data["gemini"]
 
-    msg = update.message
-    chat_id = update.effective_chat.id
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Основной хэндлер: проверка, контекст, скачивание медиа, вызов Gemini, отправка."""
+    try:
+        message = update.message
+        if not message:
+            return
 
-    # ── Determine reply‑need first (cheap) ─────────────────
-    is_creator = msg.from_user and msg.from_user.username in ["Nik_Ly", "GroupAnonymousBot"]
-    is_reply_to_bot = msg.reply_to_message and msg.reply_to_message.from_user and msg.reply_to_message.from_user.id == context.bot.id
-    is_channel_post = (
-        (msg.forward_from_chat and msg.forward_from_chat.type == ChatType.CHANNEL)
-        or (msg.sender_chat and msg.sender_chat.type == ChatType.CHANNEL)
-    )
+        chat_id = update.effective_chat.id
+        message_id = message.message_id
 
-    should_respond = False
-    trigger: str | None = None
-    if update.effective_chat.type == ChatType.PRIVATE:
-        should_respond = True
-        trigger = "dm"
-    elif is_reply_to_bot or is_creator:
-        should_respond = True
-        trigger = "reply_or_creator"
-    elif is_channel_post:
-        text_len = len((msg.text or msg.caption or "").split())
-        if msg.photo or msg.voice or msg.video_note or text_len >= 5:
-            should_respond = True
-            trigger = "channel_post"
-    else:  # group random
-        is_short = not msg.photo and not msg.voice and not msg.video_note and len((msg.text or "").split()) < 3
-        if not is_short and random.random() < 0.05:
-            should_respond = True
-            trigger = "random_group_message"
-    if not should_respond:
-        return
+        # --- Определяем отправителя ---
+        username = "Неизвестный"
+        is_creator = False
+        if message.from_user:
+            creator_nicks = ["Nik_Ly", "GroupAnonymousBot"]
+            un = message.from_user.username or message.from_user.first_name or ""
+            is_creator = un in creator_nicks
+            username = "Создатель" if is_creator else un or "Неизвестный"
 
-    # ── After decision → download media if any ─────────────
-    media_type: str | None = None
-    media_part: Any | None = None
-    if msg.photo:
-        media_type = "image"
+        # --- Содержимое сообщения ---
+        media_type = None
+        media_obj = None
+        text = ""
+        if message.photo:
+            media_type = "image"
+            media_obj = message.photo[-1]
+            text = (message.caption or "").strip()
+        elif message.voice:
+            media_type = "audio"
+            media_obj = message.voice
+        elif message.video_note:
+            media_type = "video"
+            media_obj = message.video_note
+        else:
+            text = (message.text or message.caption or "").strip()
+
+        logger.info("Msg from %s (%s): %s", username, media_type or "text", text[:50])
+
+        # --- Добавляем в контекст и обрезаем ---
+        chat_context_manager.add(
+            chat_id,
+            {"user": username, "text": text or f"[{media_type}]", "from_bot": False, "message_id": message_id},
+        )
+
+        # --- Решаем, отвечать ли ---
+        should_respond = False
+        trigger = None
+
+        # ЛС → всегда отвечаем
+        if update.effective_chat.type == "private":
+            should_respond, trigger = True, "dm"
+        else:
+            # reply или создатель → отвечаем
+            if message.reply_to_message and message.reply_to_message.from_user and message.reply_to_message.from_user.id == context.bot.id:
+                should_respond, trigger = True, "reply"
+            elif is_creator:
+                should_respond, trigger = True, "creator"
+            else:
+                # посты в канале → отвечаем, если текст ≥5 слов или медиа
+                if (message.forward_from_chat or message.sender_chat) and (
+                    media_type or len(text.split()) >= 5
+                ):
+                    should_respond, trigger = True, "channel_post"
+                else:
+                    # случайно 5% на группы
+                    if text and len(text.split()) < 3:
+                        should_respond = False
+                    elif random.random() < 0.05:
+                        should_respond, trigger = True, "random_group"
+
+        if not should_respond:
+            logger.info("Пропускаем сообщение %d от %s", message_id, username)
+            chat_context_manager.remove_last(chat_id)
+            return
+
+        logger.info("Будем отвечать (триггер: %s)", trigger)
+
+        # --- Скачиваем медиа (после проверки should_respond!) ---
+        media_bytes = None
+        mime_type = None
+        if media_obj and media_type:
+            try:
+                media_bytes, mime_type = await download_media(media_obj, media_type)
+            except MediaDownloadError as e:
+                logger.error("Media download failed: %s", e)
+                if trigger != "random_group":
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"({username}, извини, не смог скачать твой медиафайл.)",
+                        reply_to_message_id=message_id,
+                    )
+                media_bytes, mime_type = None, None
+
+        # --- Генерируем ответ через GeminiService ---
+        gemini: GeminiService = context.bot_data["gemini"]
+        response_text = await gemini.generate_response(
+            chat_id, message, trigger, media_type, media_bytes, mime_type
+        )
+
+        # --- Отправка ответа ---
+        final_text = filter_technical_info(response_text.strip()) or "..."
+        sent = await context.bot.send_message(
+            chat_id=chat_id, text=final_text, reply_to_message_id=message_id
+        )
+        logger.info("Ответ отправлен (ID %d)", sent.message_id)
+
+        # --- Добавляем ответ в контекст ---
+        chat_context_manager.add(
+            chat_id,
+            {"user": "Бот", "text": final_text, "from_bot": True, "message_id": sent.message_id},
+        )
+
+    except Exception:
+        logger.exception("Unhandled exception in handle_message")
+        # Опционально уведомляем пользователя
         try:
-            media_part = await download_media(msg.photo[-1])  # (bytes, mime)
-        except MediaDownloadError:
-            if trigger != "random_group_message":
-                await context.bot.send_message(chat_id, "(Извини, не смог скачать твой медиафайл. Попробую ответить только на текст.)", reply_to_message_id=msg.message_id)
-    elif msg.voice:
-        media_type = "audio"
-        try:
-            media_part = await download_media(msg.voice)
-        except MediaDownloadError:
-            if trigger != "random_group_message":
-                await context.bot.send_message(chat_id, "(Извини, не смог скачать твой голос. Попробую ответить текстом.)", reply_to_message_id=msg.message_id)
-    elif msg.video_note:
-        media_type = "video"
-        try:
-            media_part = await download_media(msg.video_note)
-        except MediaDownloadError:
-            if trigger != "random_group_message":
-                await context.bot.send_message(chat_id, "(Извини, не смог скачать видео‑кружок.)", reply_to_message_id=msg.message_id)
-
-    # ── Build prompt & ask LLM ─────────────────────────────
-    final_task = (
-        "ЗАДАНИЕ: Напиши ответ в стиле Лу на ПОСЛЕДНЕЕ сообщение в истории выше…"
-        if trigger != "channel_post"
-        else "ЗАДАНИЕ: Напиши комментарий в стиле Лу на ПОСЛЕДНИЙ пост…"
-    )
-    if is_creator:
-        final_task += " ПОМНИ ОСОБЫЕ ПРАВИЛА ОБЩЕНИЯ С СОЗДАТЕЛЕМ."
-
-    history = context_store.history(chat_id)
-    prompt = _build_prompt(chat_id, msg, history, final_task, media_type)
-
-    parts: List[Any] = [prompt]
-    if media_part:
-        data, mime = media_part
-        parts.append({"data": data, "mime_type": mime})
-
-    reply_text = await gemini.generate(parts)
-    reply_text = _filter_technical_info(reply_text.strip()) or "…"
-
-    sent = await context.bot.send_message(chat_id, reply_text, reply_to_message_id=msg.message_id)
-
-    context_store.append(chat_id, {"user": "Бот", "text": reply_text, "from_bot": True, "message_id": sent.message_id})
-    context_store.trim(chat_id)
-
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Извини, произошла ошибка при обработке твоего сообщения.",
+            )
+        except Exception:
+            pass
