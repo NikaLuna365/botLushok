@@ -1,7 +1,2 @@
-"""Package marker."""
-__all__ = [
-    "context",
-    "media",
-    "gemini_service",
-    "message_handler",
-]
+# Пакет ai_lu_bot
+# Ничего не меняйте в этом файле — он нужен Python, чтобы распознавать ai_lu_bot как пакет.
