@@ -1,20 +1,10 @@
 services:
   bot:
     build: .
-    container_name: botlushok
+    container_name: ai_lu_bot
     env_file:
       - .env
-    environment:
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - API_KEY=${API_KEY}
     restart: always
     mem_limit: 700m
     volumes:
       - ./logs:/app/logs
-
-  telegram-bot:
-    image: san_bot_tg-telegram-bot
-    container_name: telegram-bot
-    command: "python bot.py"
-    restart: always
-    mem_limit: 200m
