@@ -1,39 +1,35 @@
-"""Media helpers: download, resize, transcription."""
-from __future__ import annotations
-
+# ai_lu_bot/utils/media.py
 import io
 import logging
-from typing import Optional, Tuple
-
 from telegram import Voice, VideoNote, PhotoSize
 
 logger = logging.getLogger(__name__)
 
+
 class MediaDownloadError(Exception):
-    """Raised when Telegram media cannot be downloaded."""
+    """Ошибка при скачивании медиа из Telegram."""
 
-# Size limit (bytes) to avoid sending 20‑MB+ originals to Vision.
-_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
-async def download_media(obj: PhotoSize | Voice | VideoNote):
-    """Return tuple: (bytes, mime_type). Raise MediaDownloadError on failure."""
+async def download_media(media_obj: Voice | VideoNote | PhotoSize, media_type: str) -> tuple[bytes, str]:
+    """
+    Скачивает media_obj в память, возвращает (bytes, mime_type).
+    Бросает MediaDownloadError при любых проблемах.
+    """
     try:
-        file = await obj.get_file()
+        tg_file = await media_obj.get_file()
         buffer = io.BytesIO()
-        await file.download_to_memory(buffer)
+        await tg_file.download_to_memory(buffer)
         data = buffer.getvalue()
+        buffer.close()
         if not data:
-            raise RuntimeError("downloaded empty")
-        mime: str = "application/octet-stream"
-        if isinstance(obj, PhotoSize):
-            mime = "image/jpeg"
-            if len(data) > _MAX_IMAGE_BYTES:  # rudimentary resize stub
-                logger.info("Image >%d B; sending original (resize TODO)", _MAX_IMAGE_BYTES)
-        elif isinstance(obj, Voice):
-            mime = "audio/ogg"
-        elif isinstance(obj, VideoNote):
-            mime = "video/mp4"
+            raise MediaDownloadError("Пустые данные после скачивания")
+
+        mime_map = {"image": "image/jpeg", "audio": "audio/ogg", "video": "video/mp4"}
+        mime = mime_map.get(media_type)
+        if not mime:
+            raise MediaDownloadError(f"Неизвестный media_type: {media_type}")
         return data, mime
+
     except Exception as e:
-        logger.error("download_media failed: %s", e, exc_info=True)
-        raise MediaDownloadError(str(e)) from e
+        logger.error("download_media error", exc_info=True)
+        raise MediaDownloadError(str(e))
