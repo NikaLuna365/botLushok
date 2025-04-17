@@ -1,1 +1,1 @@
-web: python bot_4_02.py
+web: python -m ai_lu_bot.app
