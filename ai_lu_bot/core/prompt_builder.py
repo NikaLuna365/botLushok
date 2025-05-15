@@ -9,26 +9,27 @@ from ai_lu_bot.prompt.base_prompt import BASE_PROMPT_TEMPLATE
 logger = logging.getLogger(__name__)
 
 def build_prompt(
-    chat_id: int,
-    messages: List[Dict[str, Any]],
-    target_message: Message,
-    replied_to_message: Optional[Message] = None, # !!! ДОБАВЛЕН АРГУМЕНТ !!!
-    trigger: str,
-    media_type: str | None,
-    media_data_bytes: bytes | None
+    chat_id: int, # Required: ID чата.
+    messages: List[Dict[str, Any]], # Required: Список сообщений для контекста.
+    target_message: Message, # Required: Целевое сообщение, на которое бот отвечает.
+    trigger: str, # Required: Тип триггера ответа.
+    replied_to_message: Optional[Message] = None, # Optional: Объект сообщения, на которое отвечает target_message.
+    media_type: Optional[str] = None, # Optional: Тип медиа в целевом сообщении.
+    media_data_bytes: Optional[bytes] = None # Optional: Байты медиа (не используются для сборки текста).
 ) -> str:
     """
-    Собирает полный промпт для Gemini API.
-    Включает контекст диалога и, если доступно, текст комментируемого поста из reply_to_message.
+    Собирает полный промпт для Gemini API на основе шаблона, переданного контекста
+    чата, целевого сообщения и информации о комментируемом посте (если применимо).
 
     Args:
         chat_id: ID чата.
         messages: Список словарей, представляющих сообщения в истории диалога.
         target_message: Объект telegram.Message целевого сообщения.
+        trigger: Строка, описывающая, почему бот отвечает.
         replied_to_message: Объект telegram.Message, на который отвечает target_message (если есть).
-        response_trigger_type: Строка, описывающая, почему бот отвечает.
-        media_type: Тип медиа в целевом сообщении (image, audio, video, text) или None/text.
-        media_data_bytes: Байты медиафайла (не используются в сборке текста).
+        media_type: Тип медиа в целевом сообщении ('image', 'audio', 'video') или None/text.
+                    Должен быть установлен, только если медиа успешно скачано для анализа ИИ.
+        media_data_bytes: Байты медиафайла (не используются в этой функции).
 
     Returns:
         Строка, содержащая полный промпт для Gemini API.
@@ -121,7 +122,7 @@ def build_prompt(
         final_task_string = "ЗАДАНИЕ: Напиши комментарий в стиле Лу на ПОСЛЕДНИЙ пост (пересланный или отправленный от имени канала) в истории выше, полностью следуя своей личности, стилю формулирования и всем инструкциям из Блоков 1-5."
     elif response_trigger_type == "dm":
          final_task_string = "ЗАДАНИЕ: Ответь пользователю в личных сообщениях на его ПОСЛЕДНЕЕ сообщение в истории выше, полностью следуя своей личности (Лу), стилю формулирования и всем инструкциям из Блоков 1-5."
-    elif is_creator:
+    elif is_creator: # Признак Создателя ставится только на отправителя целевого сообщения
         final_task_string += " ПОМНИ ОСОБЫЕ ПРАВИЛА ОБЩЕНИЯ С СОЗДАТЕЛЕМ (см. Блок 1.3 и 3.1.2.15)."
 
 
