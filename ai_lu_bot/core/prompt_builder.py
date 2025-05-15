@@ -2,7 +2,8 @@
 import logging
 from typing import Any, Dict, List, Optional
 # Импортируем Message из telegram
-from telegram import Message
+from telegram import Message # Импортируем Message из telegram
+from telegram.constants import ChatType # Импортируем ChatType из constants
 # Импортируем ChatType из telegram.constants (исправление Import Error)
 from telegram.constants import ChatType
 
