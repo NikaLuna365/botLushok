@@ -5,7 +5,8 @@ import random
 # Убираем импорт из bot_4_02
 # from bot_4_02 import filter_technical_info, build_prompt # Удалить или закомментировать
 
-from telegram import Update, ReplyKeyboardMarkup, Voice, VideoNote, PhotoSize, ChatType # Добавили ChatType
+from telegram import Update, ReplyKeyboardMarkup, Voice, VideoNote, PhotoSize
+from telegram.constants import ChatType
 from telegram.ext import ContextTypes
 
 from ai_lu_bot.services.gemini import GeminiService
