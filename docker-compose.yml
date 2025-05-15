@@ -4,7 +4,41 @@ services:
     container_name: ai_lu_bot
     env_file:
       - .env
+    # Добавляем переменные окружения для Redis
+    environment:
+      REDIS_HOST: redis # Имя сервиса Redis в сети Docker Compose
+      REDIS_PORT: 6379  # Стандартный порт Redis
+      REDIS_DB: 0       # База данных Redis (0 по умолчанию)
+      # Добавляем переменную для выбора типа хранилища контекста (redis или memory)
+      CONTEXT_STORAGE_TYPE: redis # <-- Устанавливаем redis как хранилище по умолчанию в Docker
     restart: always
     mem_limit: 700m
     volumes:
       - ./logs:/app/logs
+    # Добавляем зависимость от сервиса redis
+    depends_on:
+      - redis
+    networks:
+      - default # Убедимся, что оба сервиса в одной сети
+
+  redis:
+    image: redis:7.0.12-alpine # Используем легковесный образ Redis
+    container_name: ai_lu_bot_redis
+    restart: always
+    # Используем volume для сохранения данных Redis между запусками контейнера
+    volumes:
+      - redis_data:/data
+    ports:
+      # Необязательно пробрасывать порт наружу, если только бот будет к нему обращаться
+      # - "6379:6379"
+      - "127.0.0.1:6379:6379" # Можно пробросить только на localhost для локального доступа, если нужно
+    networks:
+      - default
+
+# Объявляем volume для сохранения данных Redis
+volumes:
+  redis_data:
+
+# Объявляем сеть (опционально, по умолчанию создается сеть с именем папки проекта)
+# networks:
+#   default:
