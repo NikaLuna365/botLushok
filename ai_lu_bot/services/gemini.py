@@ -2,7 +2,7 @@
 import logging
 import os
 import traceback
-from typing import Any, List, Optional, Union
+from typing import Any, List, Optional, Union, Dict # Добавляем Dict сюда
 from telegram import Message # Импортируем для тайп-хинтинга
 
 import google.generativeai as genai
