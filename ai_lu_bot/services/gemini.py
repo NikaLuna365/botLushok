@@ -39,11 +39,11 @@ class GeminiService:
         chat_id: int,
         messages: List[Dict[str, Any]],
         target_message: Message,
-        replied_to_message: Optional[Message] = None, # !!! ДОБАВЛЕН АРГУМЕНТ !!!
-        trigger: str,
-        media_type: Optional[str],
-        media_bytes: Optional[bytes],
-        mime_type: Optional[str],
+        trigger: str, # <-- Теперь этот параметр идет раньше
+        replied_to_message: Optional[Message] = None, # <-- А этот параметр по умолчанию идет позже
+        media_type: Optional[str] = None, # Добавим значения по умолчанию для консистентности
+        media_bytes: Optional[bytes] = None, # Добавим значения по умолчанию для консистентности
+        mime_type: Optional[str] = None, # Добавим значения по умолчанию для консистентности
     ) -> str:
         """
         Генерирует ответ, обрабатывая ошибки.
